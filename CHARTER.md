@@ -1,4 +1,4 @@
-# OliviaMIDI — Project Charter
+# Battuta — Project Charter
 
 ## What this is
 
@@ -19,8 +19,8 @@ whole-song autocompletion, a composition DSL, AI self-evaluation loops, and
 premature DAW-ification. It rules in selection, local edits, preservation, diff,
 A/B, undo, audition, and explanation.
 
-`battuta` is the Rust core. `mid` is the binary it ships. OliviaMIDI is the
-product these belong to.
+Battuta is the product. `battuta` is its Rust core, and `mid` is the binary it
+ships.
 
 ## The one boundary that is mechanically decidable
 
@@ -354,7 +354,7 @@ of this, and none of them is V0.
 - **Swift, CoreMIDI, AVAudioEngine, any GUI.** Deferred until there is a real
   demand for a native Mac product. `battuta` is a library from day one precisely
   so that day does not require a rewrite.
-- **Music in this repository.** OliviaMIDI tracks the tool. The actual musical
+- **Music in this repository.** Battuta tracks the tool. The actual musical
   work lives elsewhere; `.asset` is a gitignored, machine-local pointer to it.
 
 ## Honest byproduct

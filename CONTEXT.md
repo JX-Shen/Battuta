@@ -1,4 +1,4 @@
-# OliviaMIDI
+# Battuta
 
 A human and an agent work on one piece of music together, held as MIDI files on
 disk. This glossary pins the vocabulary they use to refer to it.

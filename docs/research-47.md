@@ -4,7 +4,7 @@ Research record, 2026-09-10. Baseline:
 `7b5a0a894f4364962a2f49533c64bea8a31a08cb`.
 These are experimental observations and proposals for discussion, not adopted
 Decisions, new public terminology, a release claim or musical acceptance.
-The [parent question](https://github.com/JX-Shen/OliviaMIDI/issues/47)
+The [parent question](https://github.com/JX-Shen/Battuta/issues/47)
 remains open; the [Charter](../CHARTER.md) leaves musical judgement with the human.
 
 ## Where the evidence now points
@@ -24,8 +24,8 @@ the limits of the supplied evidence. The overnight results refine that proposal:
 | Does the pilot survive performance data? | A MAESTRO Take with 629 notes and 518 Controller events yields a verified candidate. | Preservation works in this case; pedal-context explanation remains missing. |
 
 The earlier restricted prototype and two notation-export cases are recorded in
-[#49](https://github.com/JX-Shen/OliviaMIDI/issues/49#issuecomment-5604739145)
-and [#48](https://github.com/JX-Shen/OliviaMIDI/issues/48#issuecomment-5604740685).
+[#49](https://github.com/JX-Shen/Battuta/issues/49#issuecomment-5604739145)
+and [#48](https://github.com/JX-Shen/Battuta/issues/48#issuecomment-5604740685).
 This note records new research, rather than becoming another live capability
 list. No public contract, CLI name, persistent format or release obligation
 changes here. Experiments write disposable scripts and Takes; this note is the
@@ -197,8 +197,8 @@ releases finish in the opposite order to their strikes. The positive control
 ends the earlier strike at 550, restoring the valid order. Mido confirms the
 control's strikes `(100,90), (150,80)` and releases `(550,20), (600,10)`, all
 pitch 62. The current core correctly refuses the other candidate; this is not
-a newly discovered core bug. [Input binding and final checks](https://github.com/JX-Shen/OliviaMIDI/blob/7b5a0a894f4364962a2f49533c64bea8a31a08cb/src/edit.rs#L372),
-[note-pairing check](https://github.com/JX-Shen/OliviaMIDI/blob/7b5a0a894f4364962a2f49533c64bea8a31a08cb/src/edit.rs#L460)
+a newly discovered core bug. [Input binding and final checks](https://github.com/JX-Shen/Battuta/blob/7b5a0a894f4364962a2f49533c64bea8a31a08cb/src/edit.rs#L372),
+[note-pairing check](https://github.com/JX-Shen/Battuta/blob/7b5a0a894f4364962a2f49533c64bea8a31a08cb/src/edit.rs#L460)
 
 The dependency is higher-order in the **requests**, even though the violated
 result constraint concerns two notes. This does not require a higher-order
@@ -233,7 +233,7 @@ precedes text that originally preceded the release. Existing add semantics
 correctly create and place a new pair; they do not express historical release
 payload or arbitrary Rank. Retaining A and replaying this known independent
 later request preserves the original pair without broadening the Edit format.
-[Current apply input and placement contract](https://github.com/JX-Shen/OliviaMIDI/blob/7b5a0a894f4364962a2f49533c64bea8a31a08cb/src/bin/mid/apply.rs),
+[Current apply input and placement contract](https://github.com/JX-Shen/Battuta/blob/7b5a0a894f4364962a2f49533c64bea8a31a08cb/src/bin/mid/apply.rs),
 [event preservation](adr/0003-a-take-round-trips-at-the-event-level.md),
 [Rank](adr/0008-events-sharing-one-instant-are-heard-in-the-order-they-are-written.md)
 
@@ -713,9 +713,9 @@ write or publication is claimed by this continuation.
 ### Publication
 
 Later on 2026-09-10, the owner authorised publishing the results. The public
-records are [mechanical follow-up in #49](https://github.com/JX-Shen/OliviaMIDI/issues/49#issuecomment-5611878806),
-[real-file and audio measurements in #48](https://github.com/JX-Shen/OliviaMIDI/issues/48#issuecomment-5611879372),
-and [the consolidated position and evidence index in #47](https://github.com/JX-Shen/OliviaMIDI/issues/47#issuecomment-5611884448).
+records are [mechanical follow-up in #49](https://github.com/JX-Shen/Battuta/issues/49#issuecomment-5611878806),
+[real-file and audio measurements in #48](https://github.com/JX-Shen/Battuta/issues/48#issuecomment-5611879372),
+and [the consolidated position and evidence index in #47](https://github.com/JX-Shen/Battuta/issues/47#issuecomment-5611884448).
 All three published bodies were read back and matched the prepared text under
 the JX-Shen account. Scripts, raw receipts and audio remain local; no audio
 attachment, repository commit, adopted Decision or release accompanied the
@@ -792,17 +792,17 @@ run, audio rendering or public issue update accompanied this probe.
 ## 0.2.x specification draft — owner discussion, 2026-09-10
 
 The owner approved publication and then consolidation into a single entry
-point. [#47](https://github.com/JX-Shen/OliviaMIDI/issues/47) now owns the
+point. [#47](https://github.com/JX-Shen/Battuta/issues/47) now owns the
 current 0.2.x series direction, including shared boundaries, release links,
 unresolved research and evidence links. Its rewritten
 body was read back and matched the prepared text under JX-Shen; it remains
 open and labelled needs-triage.
 
-The briefly separate [#50](https://github.com/JX-Shen/OliviaMIDI/issues/50)
+The briefly separate [#50](https://github.com/JX-Shen/Battuta/issues/50)
 is closed as a retired duplicate, with its historical draft retained and
-marked as migrated. The [map comment](https://github.com/JX-Shen/OliviaMIDI/issues/47#issuecomment-5613766199)
+marked as migrated. The [map comment](https://github.com/JX-Shen/Battuta/issues/47#issuecomment-5613766199)
 records that consolidation. Subsequent discussion established a separate
-release scope: [#51](https://github.com/JX-Shen/OliviaMIDI/issues/51) now owns
+release scope: [#51](https://github.com/JX-Shen/Battuta/issues/51) now owns
 the 0.2.0 specification and acceptance, as a native child of #47. Both remain
 open and labelled needs-triage. Keep release-specific updates in #51 and
 shared direction in #47 rather than maintaining a second local body.
