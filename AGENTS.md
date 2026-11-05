@@ -31,6 +31,9 @@ to the Piece, what is required to turn a Take into air belongs to the Rig.** The
 test is literal — is it in the MIDI file? Program changes are; the soundfont is
 not. A diff never reports Rig differences.
 
+A clone may also carry machine-local instructions that are never tracked. If
+this clone has them, read them now: @AGENTS.local.md
+
 ## Naming rules
 
 Standing rules, applied every time a term is introduced. They are here, not only
