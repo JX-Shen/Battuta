@@ -1,4 +1,4 @@
-//! `mid` — the binary OliviaMIDI ships.
+//! `mid` — the binary Battuta ships.
 //!
 //! Every command here does three things: resolve its arguments into Takes, ask
 //! the library one question about them, and format the answer. The only branches

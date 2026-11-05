@@ -1,4 +1,4 @@
-//! `battuta` — the core of OliviaMIDI.
+//! `battuta` — the core of Battuta.
 //!
 //! A Take is one `.mid` file. This crate reads one, names every note in it,
 //! applies mechanical Edits to produce a new Take, says what differs between

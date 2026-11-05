@@ -22,7 +22,7 @@ Record only what must survive.
 
 ## Project
 
-OliviaMIDI is the product; `battuta` is the Rust core; `mid` is the binary it
+Battuta is the product; `battuta` is its Rust core; `mid` is the binary it
 ships. Read `CHARTER.md` before proposing anything, and `CONTEXT.md` before
 naming anything.
 

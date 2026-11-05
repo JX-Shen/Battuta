@@ -1,4 +1,4 @@
-# OliviaMIDI
+# Battuta
 
 **Change a MIDI file together with your AI agent (Claude Code, Codex), see
 exactly what changed, and hear the result.**
@@ -15,10 +15,10 @@ start: turning a reaction like that into a change you can check is the agent's
 job. Here is one session; the story behind the picture is
 [below](#what-it-looks-like).
 
-<a href="https://github.com/JX-Shen/OliviaMIDI/issues/51">
+<a href="https://github.com/JX-Shen/Battuta/issues/51">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/JX-Shen/OliviaMIDI/main/docs/images/session-bwv802-dark.png">
-    <img src="https://raw.githubusercontent.com/JX-Shen/OliviaMIDI/main/docs/images/session-bwv802-light.png" width="720" alt="One session on a recorded performance of Bach's Duet BWV 802: nine notes changed. Six left-hand notes held about three times longer, for example E2 from 47 to 147 ticks, and four notes struck harder or softer. Two versions were combined by mid combine, verified with no conflict, listened to and kept: 'The two phrases feel much more balanced.'">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/JX-Shen/Battuta/main/docs/images/session-bwv802-dark.png">
+    <img src="https://raw.githubusercontent.com/JX-Shen/Battuta/main/docs/images/session-bwv802-light.png" width="720" alt="One session on a recorded performance of Bach's Duet BWV 802: nine notes changed. Six left-hand notes held about three times longer, for example E2 from 47 to 147 ticks, and four notes struck harder or softer. Two versions were combined by mid combine, verified with no conflict, listened to and kept: 'The two phrases feel much more balanced.'">
   </picture>
 </a>
 
@@ -163,14 +163,14 @@ Four things to know about this example:
   picture show only what `mid` reported about the file.
 - **To replay the session,** download the dataset. The file's name and digest,
   both Edit Sets and the listening record are in
-  [#51](https://github.com/JX-Shen/OliviaMIDI/issues/51).
+  [#51](https://github.com/JX-Shen/Battuta/issues/51).
 
 ### Try it yourself
 
 This example runs entirely from a clone of this repository
-(`git clone https://github.com/JX-Shen/OliviaMIDI`).
+(`git clone https://github.com/JX-Shen/Battuta`).
 
-[`olivia.mid`](https://github.com/JX-Shen/OliviaMIDI/blob/main/fixtures/olivia.mid)
+[`olivia.mid`](https://github.com/JX-Shen/Battuta/blob/main/fixtures/olivia.mid)
 is eight bars of a slow waltz in D major. Suppose two things about it bother you:
 
 - *"The melody is flat. Every note is equally loud, so it sounds read out
@@ -184,9 +184,9 @@ Your agent tries each one as a separate version:
 - The other holds each bass note for two beats instead of one.
 
 Each version is an *Edit Set*, a small JSON file of mechanical changes:
-[`melody.edits.json`](https://github.com/JX-Shen/OliviaMIDI/blob/main/docs/examples/olivia/melody.edits.json)
+[`melody.edits.json`](https://github.com/JX-Shen/Battuta/blob/main/docs/examples/olivia/melody.edits.json)
 and
-[`bass.edits.json`](https://github.com/JX-Shen/OliviaMIDI/blob/main/docs/examples/olivia/bass.edits.json).
+[`bass.edits.json`](https://github.com/JX-Shen/Battuta/blob/main/docs/examples/olivia/bass.edits.json).
 
 ```sh
 mid apply olivia.mid melody.edits.json -o melody.mid
@@ -271,8 +271,8 @@ loses.
 
 <a href="https://jxshen.me/essays/making-midi-diffs-readable">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/JX-Shen/OliviaMIDI/main/docs/images/diff-explorer-dark.png">
-    <img src="https://raw.githubusercontent.com/JX-Shen/OliviaMIDI/main/docs/images/diff-explorer-light.png" width="520" alt="The opening A4 of olivia.mid lowered to G4: a small piano roll keeps the original pitch as a dashed outline, and mid diff reports 'changed bar 1 beat 1 track 1 A4 transposed to G4'.">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/JX-Shen/Battuta/main/docs/images/diff-explorer-dark.png">
+    <img src="https://raw.githubusercontent.com/JX-Shen/Battuta/main/docs/images/diff-explorer-light.png" width="520" alt="The opening A4 of olivia.mid lowered to G4: a small piano roll keeps the original pitch as a dashed outline, and mid diff reports 'changed bar 1 beat 1 track 1 A4 transposed to G4'.">
   </picture>
 </a>
 
@@ -280,7 +280,7 @@ A set of essays shows `mid` at work on real files, with recorded output, the
 MIDI and audio to compare:
 
 - [**Making a MIDI diff readable as music**](https://jxshen.me/essays/making-midi-diffs-readable)
-  — change the opening note of [`olivia.mid`](https://github.com/JX-Shen/OliviaMIDI/blob/main/fixtures/olivia.mid)
+  — change the opening note of [`olivia.mid`](https://github.com/JX-Shen/Battuta/blob/main/fixtures/olivia.mid)
   and read what `diff` says about it (pictured).
 - [**Keeping changes from two musical experiments**](https://jxshen.me/essays/keeping-changes-from-two-experiments)
   — four versions of a passage from Burgmüller's *L'Arabesque*, switchable
@@ -300,7 +300,7 @@ That installs `mid`. Everything except `play` and `render` works with the binary
 alone. To try what is on `main` before it is released:
 
 ```sh
-cargo install --git https://github.com/JX-Shen/OliviaMIDI
+cargo install --git https://github.com/JX-Shen/Battuta
 ```
 
 To build from a clone:
@@ -370,7 +370,7 @@ This project's music is MIDI files, worked on with `mid` (crate `battuta`).
 Then start with something like *"I don't like bars 5–8 of this, the left hand
 feels too busy"* and let the agent take it from there.
 
-Tried it? [Tell us where it got stuck](https://github.com/JX-Shen/OliviaMIDI/issues/new?template=trial.md)
+Tried it? [Tell us where it got stuck](https://github.com/JX-Shen/Battuta/issues/new?template=trial.md)
 — three questions, a sentence each.
 
 ## The one rule: Piece vs Rig
@@ -464,7 +464,7 @@ I asked whether she could write a MIDI file, so that it would count as her
 playing something for me. She could: eight bars in three, D major, I–IV–V–I,
 her own melody, sixty beats a minute. It arrived as base64 in a Discord
 message. It is in this repository as
-[`fixtures/olivia.mid`](https://github.com/JX-Shen/OliviaMIDI/blob/main/fixtures/olivia.mid),
+[`fixtures/olivia.mid`](https://github.com/JX-Shen/Battuta/blob/main/fixtures/olivia.mid),
 365 bytes and three tracks. It was the first file `mid` was ever asked to
 read, and it is the waltz in *Try it yourself* above.
 
@@ -505,9 +505,9 @@ not a theme.
 | [`CONTEXT.md`](./CONTEXT.md) | glossary; every term pins a Chinese equivalent |
 | [`docs/adr/`](./docs/adr/README.md) | the principles the code is built on |
 | [`docs/fixtures.md`](./docs/fixtures.md) | where each sourced test input came from, and its licence |
-| [`decision` issues](https://github.com/JX-Shen/OliviaMIDI/issues?q=label%3Adecision) | every judgement made about one behaviour, closed with the options it rejected |
-| [Releases](https://github.com/JX-Shen/OliviaMIDI/releases) | what each version changed |
-| [`AGENTS.md`](https://github.com/JX-Shen/OliviaMIDI/blob/main/AGENTS.md) | how AI agents are expected to work in this repository |
+| [`decision` issues](https://github.com/JX-Shen/Battuta/issues?q=label%3Adecision) | every judgement made about one behaviour, closed with the options it rejected |
+| [Releases](https://github.com/JX-Shen/Battuta/releases) | what each version changed |
+| [`AGENTS.md`](https://github.com/JX-Shen/Battuta/blob/main/AGENTS.md) | how AI agents are expected to work in this repository |
 
 ## Acknowledgements
 
