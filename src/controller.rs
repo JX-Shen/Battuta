@@ -322,13 +322,10 @@ impl Take {
     /// the changes that happen *during* the passage — the cut `programs_in`
     /// makes, for the same reason.
     pub fn controllers_in(&self, bars: Option<BarRange>) -> Result<Controllers> {
-        let span = match bars {
-            Some(bars) => self.tick_span(bars)?,
-            None => crate::bars::TickSpan {
-                start: 0,
-                end: u32::MAX,
-            },
-        };
+        // Whole-Take queries have no upper endpoint; every Tick is valid. #80.
+        let span = bars.map(|bars| self.tick_span(bars)).transpose()?;
+        let start = span.map_or(0, |span| span.start);
+        let end = span.map(|span| span.end);
 
         let events = self.controller_events()?;
         let resets = self.reset_events()?;
@@ -336,7 +333,7 @@ impl Take {
 
         let mut addresses: Vec<_> = all
             .iter()
-            .filter(|stated| stated.tick < span.end)
+            .filter(|stated| end.is_none_or(|end| stated.tick < end))
             .map(|stated| (stated.channel, stated.controller))
             .collect();
         addresses.sort_unstable();
@@ -345,12 +342,12 @@ impl Take {
             .into_iter()
             .map(|(channel, controller)| {
                 let reading = timeline(&said(&events, &resets, channel, controller));
-                let value = handed_over(reading.at(span.start));
-                let unranked = reading.unranked(span.start, bars.map(|_| span.end));
+                let value = handed_over(reading.at(start));
+                let unranked = reading.unranked(start, end);
                 let resets = reading
                     .moments
                     .iter()
-                    .filter(|(at, _)| span.start < *at && *at < span.end)
+                    .filter(|(at, _)| start < *at && end.is_none_or(|end| *at < end))
                     .filter_map(|(_, held)| match held {
                         Reading::Reset { at } => Some(*at),
                         _ => None,
@@ -360,15 +357,15 @@ impl Take {
                     let mut values = value
                         .determinate()
                         .flatten()
-                        .map(|value| (span.start, value))
+                        .map(|value| (start, value))
                         .into_iter()
                         .chain(
                             all.iter()
                                 .filter(|stated| {
                                     stated.channel == channel
                                         && stated.controller == controller
-                                        && span.start < stated.tick
-                                        && stated.tick < span.end
+                                        && start < stated.tick
+                                        && end.is_none_or(|end| stated.tick < end)
                                 })
                                 .map(|stated| (stated.tick, stated.value)),
                         );
@@ -408,7 +405,7 @@ impl Take {
             .collect();
         let stated = all
             .into_iter()
-            .filter(|stated| span.start < stated.tick && stated.tick < span.end)
+            .filter(|stated| start < stated.tick && end.is_none_or(|end| stated.tick < end))
             .collect();
         Ok(Controllers {
             controllers,

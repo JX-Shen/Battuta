@@ -596,3 +596,162 @@ fn carries_the_count_of_notes_sounding_into_a_passage_in_json() {
     .expect("inspect --json is JSON");
     assert_eq!(opening["held_in"], 0);
 }
+
+// #80: the large absolute Tick is reached with legal 28-bit MIDI deltas.
+fn state_at_tick(
+    dir: &std::path::Path,
+    tick: u32,
+    event: midly::TrackEventKind<'static>,
+) -> std::path::PathBuf {
+    let mut events = Vec::new();
+    for gap in 1..=16u32 {
+        let at = gap * 0x0fff_ffff;
+        if at < tick {
+            events.push((
+                at,
+                midly::TrackEventKind::Meta(midly::MetaMessage::Text(b"")),
+            ));
+        }
+    }
+    events.push((tick, event));
+    common::build_take_setting(&dir.join("state.mid"), 480, &[(0, 4, 4)], &events, &[])
+}
+
+#[test]
+fn whole_take_includes_controller_at_maximum_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    for tick in [u32::MAX - 1, u32::MAX] {
+        let path = state_at_tick(dir.path(), tick, common::control_change(0, 11, 80).1);
+        let before = std::fs::read(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&common::inspect_json(&path)).unwrap();
+        assert_eq!(
+            json["stated_controllers"],
+            serde_json::json!([
+                {"track":1,"track_names":[],"channel":0,"controller":11,"tick":tick,"value":80}
+            ])
+        );
+        assert_eq!(
+            json["controllers"][0]["peak"],
+            serde_json::json!({"kind":"complete","value":80,"at":tick})
+        );
+        assert_eq!(
+            json["controllers"][0]["lowest"],
+            json["controllers"][0]["peak"]
+        );
+        let human = mid().arg("inspect").arg(&path).output().unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert!(
+            human.contains("CC11") && human.contains("peak 80"),
+            "{human}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn whole_take_includes_program_at_maximum_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    for tick in [u32::MAX - 1, u32::MAX] {
+        let path = state_at_tick(dir.path(), tick, common::program_change(0, 40).1);
+        let json: serde_json::Value = serde_json::from_str(&common::inspect_json(&path)).unwrap();
+        assert_eq!(
+            json["stated_programs"],
+            serde_json::json!([
+                {"track":1,"track_names":[],"channel":0,"tick":tick,"program":40}
+            ])
+        );
+        assert_eq!(json["programs"].as_array().unwrap().len(), 1);
+        assert_eq!(json["programs"][0]["channel"], 0);
+    }
+}
+
+#[test]
+fn whole_take_includes_bend_at_maximum_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    for tick in [u32::MAX - 1, u32::MAX] {
+        let path = state_at_tick(dir.path(), tick, common::pitch_bend(0, -4000).1);
+        let json: serde_json::Value = serde_json::from_str(&common::inspect_json(&path)).unwrap();
+        assert_eq!(
+            json["stated_bends"],
+            serde_json::json!([
+                {"track":1,"track_names":[],"channel":0,"tick":tick,"value":-4000}
+            ])
+        );
+        assert_eq!(
+            json["bends"][0]["extremes"],
+            serde_json::json!({
+                "kind":"complete","furthest_down":-4000,"furthest_down_at":tick,
+                "furthest_up":-4000,"furthest_up_at":tick
+            })
+        );
+    }
+}
+
+#[test]
+fn bounded_inspection_keeps_its_exclusive_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    for tick in [1919, 1920] {
+        for (kind, key, stated) in [
+            (
+                common::control_change(0, 11, 80).1,
+                "controllers",
+                "stated_controllers",
+            ),
+            (
+                common::program_change(0, 40).1,
+                "programs",
+                "stated_programs",
+            ),
+            (common::pitch_bend(0, -4000).1, "bends", "stated_bends"),
+        ] {
+            let path = state_at_tick(dir.path(), tick, kind);
+            let output = inspect_bars(&path, "1:1");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let count = usize::from(tick == 1919);
+            assert_eq!(
+                json[key].as_array().unwrap().len(),
+                count,
+                "{key} at {tick}"
+            );
+            assert_eq!(
+                json[stated].as_array().unwrap().len(),
+                count,
+                "{stated} at {tick}"
+            );
+            if count == 1 {
+                assert_eq!(json[stated][0]["tick"], 1919);
+            }
+        }
+    }
+}
+
+#[test]
+fn whole_take_discloses_a_reset_at_maximum_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = state_at_tick(dir.path(), u32::MAX, common::control_change(0, 121, 0).1);
+    let bytes = std::fs::read(&path).unwrap();
+    let mut smf = midly::Smf::parse(&bytes).unwrap();
+    smf.tracks[1].insert(
+        0,
+        midly::TrackEvent {
+            delta: 0.into(),
+            kind: common::control_change(0, 11, 80).1,
+        },
+    );
+    smf.save(&path).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&common::inspect_json(&path)).unwrap();
+    assert_eq!(
+        json["controllers"][0]["resets"],
+        serde_json::json!([4294967295u32])
+    );
+    assert_eq!(
+        json["controllers"][0]["value"],
+        serde_json::json!({"kind":"determinate","value":80})
+    );
+}

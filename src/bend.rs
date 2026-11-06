@@ -147,19 +147,16 @@ impl Take {
     /// the passage or inside it. Sixteen channels reporting *unstated* would be
     /// sixteen ways of saying nothing, and most Takes bend nothing at all.
     pub fn bends_in(&self, bars: Option<BarRange>) -> Result<Bends> {
-        let span = match bars {
-            Some(bars) => self.tick_span(bars)?,
-            None => crate::bars::TickSpan {
-                start: 0,
-                end: u32::MAX,
-            },
-        };
+        // Whole-Take queries have no upper endpoint; every Tick is valid. #80.
+        let span = bars.map(|bars| self.tick_span(bars)).transpose()?;
+        let start = span.map_or(0, |span| span.start);
+        let end = span.map(|span| span.end);
 
         let all = self.stated_bends()?;
 
         let mut channels: Vec<_> = all
             .iter()
-            .filter(|stated| stated.tick < span.end)
+            .filter(|stated| end.is_none_or(|end| stated.tick < end))
             .map(|stated| stated.channel)
             .collect();
         channels.sort_unstable();
@@ -167,20 +164,20 @@ impl Take {
         let mut held = Vec::new();
         for channel in channels {
             let timeline = timeline(&all, channel);
-            let value = timeline.at(span.start);
-            let unranked = timeline.unranked(span.start, bars.map(|_| span.end));
+            let value = timeline.at(start);
+            let unranked = timeline.unranked(start, end);
             let extremes = if unranked.is_empty() {
                 let mut values = value
                     .determinate()
                     .flatten()
-                    .map(|value| (span.start, value))
+                    .map(|value| (start, value))
                     .into_iter()
                     .chain(
                         all.iter()
                             .filter(|stated| {
                                 stated.channel == channel
-                                    && span.start < stated.tick
-                                    && stated.tick < span.end
+                                    && start < stated.tick
+                                    && end.is_none_or(|end| stated.tick < end)
                             })
                             .map(|stated| (stated.tick, stated.value)),
                     );
@@ -216,7 +213,7 @@ impl Take {
         }
         let stated = all
             .into_iter()
-            .filter(|stated| span.start < stated.tick && stated.tick < span.end)
+            .filter(|stated| start < stated.tick && end.is_none_or(|end| stated.tick < end))
             .collect();
         Ok(Bends {
             bends: held,
