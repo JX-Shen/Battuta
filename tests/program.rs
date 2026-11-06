@@ -791,3 +791,82 @@ fn events_of_track(path: &std::path::Path, track: usize) -> Vec<(u32, &'static s
     }
     found
 }
+
+/// Both tracks are reduced to the last statement in final Rank order, rather
+/// than the first duplicate or any earlier disagreeing value (#78).
+#[test]
+fn final_program_values_decide_cross_track_construction() {
+    for (duplicates, value, succeeds) in [
+        ([80, 100], 80, false),
+        ([100, 80], 80, true),
+        ([80, 100], 100, true),
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let take = common::build_state_tracks(
+            &dir.path().join("program.mid"),
+            &[
+                duplicates
+                    .iter()
+                    .map(|&v| common::program_change(480, v))
+                    .collect(),
+                vec![],
+            ],
+        );
+        let edits = format!(
+            r#"{{"kind":"set_program","track":1,"channel":0,"tick":480,"program":{value}}}"#
+        );
+        let out = common::apply_state_case(&take, &edits, &[], succeeds);
+        if succeeds {
+            assert_eq!(
+                common::stated_programs(&out),
+                vec![
+                    (0, 480, 0, duplicates[0]),
+                    (0, 480, 0, duplicates[1]),
+                    (1, 480, 0, value)
+                ]
+            );
+        } else {
+            let out = common::apply_state_case(&take, &edits, &["t1:c0:s480"], true);
+            assert_eq!(
+                common::stated_programs(&out),
+                vec![(0, 480, 0, 80), (0, 480, 0, 100), (1, 480, 0, 80)]
+            );
+        }
+    }
+}
+
+#[test]
+fn program_construction_uses_the_final_edit_set_on_both_tracks() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let take = common::build_state_tracks(
+        &dir.path().join("program.mid"),
+        &[
+            vec![
+                common::program_change(480, 80),
+                common::program_change(480, 100),
+            ],
+            vec![
+                common::program_change(480, 100),
+                common::program_change(480, 80),
+            ],
+        ],
+    );
+    let out = common::apply_state_case(
+        &take,
+        r#"
+        {"kind":"set_program","track":0,"channel":0,"tick":480,"program":60},
+        {"kind":"set_program","track":1,"channel":0,"tick":480,"program":60}
+    "#,
+        &[],
+        true,
+    );
+    assert_eq!(
+        common::stated_programs(&out),
+        vec![
+            (0, 480, 0, 80),
+            (0, 480, 0, 60),
+            (1, 480, 0, 100),
+            (1, 480, 0, 60)
+        ]
+    );
+}

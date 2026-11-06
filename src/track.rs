@@ -39,6 +39,8 @@ use midly::{MetaMessage, MidiMessage, TrackEvent, TrackEventKind};
 /// One event of a track, found by its index and placed by its Tick and Rank.
 struct Slot<'a> {
     tick: u32,
+    /// Input site retained while this operation moves or removes the slot (#78).
+    source_tick: Option<u32>,
     kind: TrackEventKind<'a>,
     /// Where this event falls among the events sharing its Tick — which of
     /// them a synthesiser meets first. Starts spaced by `RANK_SPACING` from an
@@ -103,14 +105,14 @@ pub(crate) enum Placement {
 /// lookup for the one in force means the last of them by Rank). They agree by
 /// asking `is_stated_by`, rather than by two searches spelling out the same
 /// match.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Statement {
     pub(crate) channel: u8,
     pub(crate) state: ChannelState,
 }
 
 /// Which state of a channel a `Statement` is about.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ChannelState {
     /// Which Program the channel is on.
     Program,
@@ -194,6 +196,7 @@ impl<'a> Rewrite<'a> {
             tick += event.delta.as_int();
             slots.push(Slot {
                 tick,
+                source_tick: Some(tick),
                 kind: event.kind,
                 rank: slots.len() as i64 * RANK_SPACING,
                 alive: true,
@@ -219,6 +222,7 @@ impl<'a> Rewrite<'a> {
     ) -> usize {
         self.slots.push(Slot {
             tick,
+            source_tick: None,
             kind,
             rank: 0,
             alive: true,
@@ -382,24 +386,38 @@ impl<'a> Rewrite<'a> {
         Some(previous)
     }
 
-    /// Every Program or Controller event the track still holds, as the
-    /// cross-track check reads them.
-    ///
-    /// No Rank comes out. A Rank orders events within one track and the caller
-    /// of this is comparing two, which is the whole reason that check exists —
-    /// handing it a number it must not compare would be an invitation.
+    /// Live statements in final within-track order, as the state reader needs
+    /// them. No Rank escapes the track (#78).
     pub(crate) fn stated(&self) -> impl Iterator<Item = Stated> + '_ {
-        self.slots
-            .iter()
-            .filter(|slot| slot.alive)
-            .filter_map(|slot| {
-                Some(Stated {
-                    tick: slot.tick,
-                    statement: stated_by(&slot.kind)?,
-                    value: valued(&slot.kind)?,
-                    written: slot.written.is_some(),
-                })
+        let mut slots: Vec<_> = self.slots.iter().filter(|slot| slot.alive).collect();
+        slots.sort_by_key(|slot| (slot.tick, slot.rank));
+        slots.into_iter().filter_map(|slot| {
+            Some(Stated {
+                tick: slot.tick,
+                statement: stated_by(&slot.kind)?,
+                value: valued(&slot.kind)?,
+                written: slot.written.is_some(),
             })
+        })
+    }
+
+    /// Value addresses whose final role may have changed, including a removed
+    /// or moved statement's source. This provenance lasts only for apply (#78).
+    pub(crate) fn affected_states(&self) -> impl Iterator<Item = (u32, Statement)> + '_ {
+        self.slots.iter().filter_map(|slot| {
+            if slot.alive && slot.written.is_none() {
+                return None;
+            }
+            let statement = stated_by(&slot.kind)?;
+            if matches!(statement.state, ChannelState::Controller(number) if number >= crate::controller::FIRST_CHANNEL_MODE) {
+                return None;
+            }
+            Some((slot, statement))
+        }).flat_map(|(slot, statement)| {
+            slot.source_tick.into_iter()
+                .chain(slot.alive.then_some(slot.tick))
+                .map(move |tick| (tick, statement))
+        })
     }
 
     /// Whether this track states a Bend at the given channel and Tick — #42.

@@ -981,3 +981,86 @@ fn stdout(args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).expect("stdout is UTF-8")
 }
+
+/// Small parallel tracks in literal event order, with no notes to confound a
+/// continuing-state construction check (#78).
+pub fn build_state_tracks(
+    path: &Path,
+    tracks: &[Vec<(u32, midly::TrackEventKind<'static>)>],
+) -> PathBuf {
+    let tracks = tracks
+        .iter()
+        .map(|events| {
+            let mut previous = 0;
+            events
+                .iter()
+                .copied()
+                .chain([(
+                    1920,
+                    midly::TrackEventKind::Meta(midly::MetaMessage::EndOfTrack),
+                )])
+                .map(|(tick, kind)| {
+                    let event = midly::TrackEvent {
+                        delta: midly::num::u28::new(tick - previous),
+                        kind,
+                    };
+                    previous = tick;
+                    event
+                })
+                .collect()
+        })
+        .collect();
+    midly::Smf {
+        header: midly::Header::new(
+            midly::Format::Parallel,
+            midly::Timing::Metrical(midly::num::u15::new(480)),
+        ),
+        tracks,
+    }
+    .save(path)
+    .expect("built Take is writable");
+    path.to_path_buf()
+}
+
+/// Drive the process boundary and preserve both input and an existing output
+/// on refusal. The caller supplies the verdict, never another battuta command.
+pub fn apply_state_case(take: &Path, edits: &str, allowing: &[&str], succeeds: bool) -> PathBuf {
+    let dir = take.parent().expect("Take directory");
+    let out = dir.join("state-out.mid");
+    let set = edit_set(dir, "state-edits", edits);
+    let before = std::fs::read(take).expect("source bytes");
+    let run = || {
+        let mut command = mid();
+        command.arg("apply").arg(take).arg(&set).arg("-o").arg(&out);
+        for site in allowing {
+            command.arg("--allow-unranked").arg(site);
+        }
+        command.output().expect("mid runs")
+    };
+    let result = run();
+    assert_eq!(
+        result.status.success(),
+        succeeds,
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(std::fs::read(take).expect("source bytes"), before);
+    if !succeeds {
+        assert!(!out.exists(), "refusal created output");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains("tick "), "{stderr}");
+        assert!(
+            stderr.contains("track 0") && stderr.contains("track 1"),
+            "{stderr}"
+        );
+        std::fs::write(&out, b"existing output").expect("sentinel");
+        assert!(!run().status.success());
+        assert_eq!(
+            std::fs::read(&out).expect("output bytes"),
+            b"existing output"
+        );
+        assert_eq!(std::fs::read(take).expect("source bytes"), before);
+        std::fs::remove_file(&out).expect("remove sentinel");
+    }
+    out
+}

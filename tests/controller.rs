@@ -1962,3 +1962,235 @@ fn dipped(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
         .success();
     (before, after)
 }
+
+#[test]
+fn final_controller_values_decide_cross_track_construction() {
+    for (duplicates, value, succeeds) in [
+        ([80, 100], 80, false),
+        ([100, 80], 80, true),
+        ([80, 100], 100, true),
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let take = common::build_state_tracks(
+            &dir.path().join("controller.mid"),
+            &[
+                duplicates
+                    .iter()
+                    .map(|&v| common::control_change(480, 11, v))
+                    .collect(),
+                vec![],
+            ],
+        );
+        let edits = format!(
+            r#"{{"kind":"set_controller","track":1,"channel":0,"controller":11,"tick":480,"value":{value}}}"#
+        );
+        let out = common::apply_state_case(&take, &edits, &[], succeeds);
+        if succeeds {
+            assert_eq!(stated_controller(&out, 0, 0, 11, 480), duplicates);
+            assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![value]);
+        } else {
+            let out = common::apply_state_case(&take, &edits, &["t1:c0:s480"], true);
+            assert_eq!(stated_controller(&out, 0, 0, 11, 480), vec![80, 100]);
+            assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![80]);
+        }
+    }
+}
+
+/// A move and a deletion each expose a source statement no Edit wrote (#78).
+#[test]
+fn moved_controller_source_requires_its_own_allowance() {
+    vacated_controller_source_requires_its_own_allowance("move_controller");
+}
+
+#[test]
+fn deleted_controller_source_requires_its_own_allowance() {
+    vacated_controller_source_requires_its_own_allowance("delete_controller");
+}
+
+fn vacated_controller_source_requires_its_own_allowance(kind: &str) {
+    for (allowing, succeeds) in [
+        (vec![], false),
+        (vec!["t0:c0:s960"], false),
+        (vec!["t1:c0:s480"], false),
+        (vec!["t0:c0:s480"], true),
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let take = common::build_state_tracks(
+            &dir.path().join("controller.mid"),
+            &[
+                vec![
+                    common::control_change(480, 11, 80),
+                    common::control_change(480, 11, 100),
+                ],
+                vec![common::control_change(480, 11, 100)],
+            ],
+        );
+        let delta = if kind == "move_controller" {
+            ",\"delta_ticks\":480"
+        } else {
+            ""
+        };
+        let edits = format!(
+            r#"{{"kind":"{kind}","track":0,"channel":0,"controller":11,"tick":480{delta}}}"#
+        );
+        let out = common::apply_state_case(&take, &edits, &allowing, succeeds);
+        if succeeds {
+            assert_eq!(stated_controller(&out, 0, 0, 11, 480), vec![80]);
+            assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![100]);
+            assert_eq!(
+                stated_controller(&out, 0, 0, 11, 960),
+                if kind == "move_controller" {
+                    vec![100]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn controller_sources_are_checked_only_after_the_edit_set_lands() {
+    for kind in ["move_controller", "delete_controller"] {
+        for equal in [true, false] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let first = if equal { 100 } else { 80 };
+            let take = common::build_state_tracks(
+                &dir.path().join("controller.mid"),
+                &[
+                    vec![
+                        common::control_change(480, 11, first),
+                        common::control_change(480, 11, 100),
+                    ],
+                    vec![common::control_change(480, 11, 100)],
+                ],
+            );
+            let delta = if kind == "move_controller" {
+                ",\"delta_ticks\":480"
+            } else {
+                ""
+            };
+            let repair = if equal {
+                String::new()
+            } else {
+                r#",{"kind":"set_controller","track":0,"channel":0,"controller":11,"tick":480,"value":100}"#.to_string()
+            };
+            let edits = format!(
+                r#"{{"kind":"{kind}","track":0,"channel":0,"controller":11,"tick":480{delta}}}{repair}"#
+            );
+            let out = common::apply_state_case(&take, &edits, &[], true);
+            assert_eq!(stated_controller(&out, 0, 0, 11, 480), vec![100]);
+            assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![100]);
+            assert_eq!(
+                stated_controller(&out, 0, 0, 11, 960),
+                if kind == "move_controller" {
+                    vec![100]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn controller_move_restoration_is_checked_by_its_final_result() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let take = common::build_state_tracks(
+        &dir.path().join("controller.mid"),
+        &[
+            vec![
+                common::control_change(240, 11, 100),
+                common::control_change(480, 11, 80),
+                common::control_change(480, 11, 100),
+            ],
+            vec![
+                common::control_change(480, 11, 80),
+                common::control_change(480, 11, 100),
+            ],
+        ],
+    );
+    // The first move exposes 80; returning overwrites that last duplicate.
+    // The earliest slot then replaces the returning statement, leaving 100.
+    let out = common::apply_state_case(
+        &take,
+        r#"
+        {"kind":"move_controller","track":0,"channel":0,"controller":11,"tick":480,"delta_ticks":480},
+        {"kind":"move_controller","track":0,"channel":0,"controller":11,"tick":480,"delta_ticks":-480},
+        {"kind":"move_controller","track":0,"channel":0,"controller":11,"tick":240,"delta_ticks":240},
+        {"kind":"set_controller","track":1,"channel":0,"controller":11,"tick":480,"value":100}
+    "#,
+        &[],
+        true,
+    );
+    assert_eq!(stated_controller(&out, 0, 0, 11, 240), Vec::<u8>::new());
+    assert_eq!(stated_controller(&out, 0, 0, 11, 480), vec![100]);
+    assert_eq!(stated_controller(&out, 0, 0, 11, 960), Vec::<u8>::new());
+    assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![80, 100]);
+}
+
+#[test]
+fn moved_controller_final_rank_can_reverse_slot_allocation_order() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let take = common::build_state_tracks(
+        &dir.path().join("controller.mid"),
+        &[
+            vec![
+                common::control_change(240, 11, 100),
+                common::control_change(480, 11, 70),
+                common::control_change(480, 11, 80),
+            ],
+            vec![common::control_change(480, 11, 100)],
+        ],
+    );
+    let out = common::apply_state_case(
+        &take,
+        r#"
+        {"kind":"move_controller","track":0,"channel":0,"controller":11,"tick":240,"delta_ticks":240}
+    "#,
+        &[],
+        true,
+    );
+    assert_eq!(stated_controller(&out, 0, 0, 11, 240), Vec::<u8>::new());
+    assert_eq!(stated_controller(&out, 0, 0, 11, 480), vec![70, 100]);
+    assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![100]);
+}
+
+#[test]
+fn controller_move_must_allow_both_conflicting_endpoints() {
+    for (allowing, succeeds) in [
+        (vec![], false),
+        (vec!["t0:c0:s480"], false),
+        (vec!["t0:c0:s960"], false),
+        (vec!["t0:c0:s480", "t0:c0:s960"], true),
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let take = common::build_state_tracks(
+            &dir.path().join("controller.mid"),
+            &[
+                vec![
+                    common::control_change(480, 11, 80),
+                    common::control_change(480, 11, 100),
+                ],
+                vec![
+                    common::control_change(480, 11, 100),
+                    common::control_change(960, 11, 80),
+                ],
+            ],
+        );
+        let out = common::apply_state_case(
+            &take,
+            r#"
+            {"kind":"move_controller","track":0,"channel":0,"controller":11,"tick":480,"delta_ticks":480}
+        "#,
+            &allowing,
+            succeeds,
+        );
+        if succeeds {
+            assert_eq!(stated_controller(&out, 0, 0, 11, 480), vec![80]);
+            assert_eq!(stated_controller(&out, 0, 0, 11, 960), vec![100]);
+            assert_eq!(stated_controller(&out, 1, 0, 11, 480), vec![100]);
+            assert_eq!(stated_controller(&out, 1, 0, 11, 960), vec![80]);
+        }
+    }
+}

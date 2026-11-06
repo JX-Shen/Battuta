@@ -403,8 +403,8 @@ pub enum Error {
     },
 
     #[error(
-        "at tick {tick}, this Edit Set put a {state} for channel {channel} on track {stating}, \
-         while track {stated} states the same thing there and says {carried} rather than {asked}. \
+        "at tick {tick}, after this Edit Set, track {stating} states a {state} for channel {channel} \
+         with value {asked}, while track {stated} states the same thing there and says {carried}. \
          A Rank orders events within one track; these are on two, and the file states no order \
          between them, so the channel would end up on either value depending on the player. \
          Nothing has been written.\n\

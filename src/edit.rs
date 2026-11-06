@@ -1,6 +1,7 @@
 use crate::controller::FIRST_CHANNEL_MODE;
 use crate::error::{Error, Result};
 use crate::note::{Note, NoteId};
+use crate::reading::{Candidate, Reading, Timeline};
 use crate::take::Take;
 use crate::track::{Placement, Rewrite, Statement};
 use midly::num::{u4, u7};
@@ -624,11 +625,9 @@ impl std::str::FromStr for Site {
 ///   orders leave the channel where the Take says, so the file determining no
 ///   order determines nothing.
 ///
-/// Only what this Edit Set wrote, as `stay_placed` and `stay_distinct` are. A
-/// Take that arrived with a programme on one track and its notes on another
-/// keeps it — that is the author's file and ADR-0003 keeps what it carried in.
-/// `mid inspect` is where those are reported; this is only about what we would
-/// write ourselves. See #26.
+/// State/strike checks concern written events; continuing-value checks concern
+/// affected addresses, including a move or deletion's source (#78). Unrelated
+/// carried sites remain the author's (ADR-0003); inspection reports them. See #26.
 fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
     let named = |track: usize, channel: u8, tick: u32| {
         allowed.contains(&Site {
@@ -638,8 +637,66 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
         })
     };
 
+    // Continuing values are reduced by the same reader as inspection (#42,
+    // #78). Strike ordering below is a separate relation (ADR-0008).
+    let final_statements: Vec<Vec<_>> = tracks
+        .iter()
+        .map(|track| track.stated().collect())
+        .collect();
+    let mut statements: BTreeMap<Statement, Vec<Candidate<u8>>> = BTreeMap::new();
+    for (track, stated) in final_statements.iter().enumerate() {
+        for state in stated {
+            statements
+                .entry(state.statement)
+                .or_default()
+                .push(Candidate {
+                    track,
+                    track_names: Vec::new().into(),
+                    tick: state.tick,
+                    value: state.value,
+                });
+        }
+    }
+    let timelines: BTreeMap<_, _> = statements
+        .into_iter()
+        .map(|(statement, values)| (statement, Timeline::read(values)))
+        .collect();
     for (stating, track) in tracks.iter().enumerate() {
-        for state in track.stated().filter(|state| state.written) {
+        for (tick, statement) in track.affected_states() {
+            if named(stating, statement.channel, tick) {
+                continue;
+            }
+            let Some(timeline) = timelines.get(&statement) else {
+                continue;
+            };
+            let Reading::Indeterminate { candidates } = timeline.at(tick) else {
+                continue;
+            };
+            let Some(own) = candidates
+                .iter()
+                .find(|candidate| candidate.track == stating && candidate.tick == tick)
+            else {
+                continue;
+            };
+            if let Some(other) = candidates
+                .iter()
+                .find(|candidate| candidate.value != own.value)
+            {
+                return Err(Error::StatesUnrankedAgainstEachOther {
+                    stating,
+                    stated: other.track,
+                    tick,
+                    channel: statement.channel,
+                    state: statement.state.named(),
+                    asked: own.value,
+                    carried: other.value,
+                });
+            }
+        }
+        for state in final_statements[stating]
+            .iter()
+            .filter(|state| state.written)
+        {
             let statement = state.statement;
             if named(stating, statement.channel, state.tick) {
                 continue;
@@ -660,21 +717,6 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                         state: statement.state.named(),
                     });
                 }
-                if let Some(carried) = elsewhere
-                    .stated()
-                    .find(|held| held.tick == state.tick && held.statement == statement)
-                    .filter(|held| held.value != state.value)
-                {
-                    return Err(Error::StatesUnrankedAgainstEachOther {
-                        stating,
-                        stated: other,
-                        tick: state.tick,
-                        channel: statement.channel,
-                        state: statement.state.named(),
-                        asked: state.value,
-                        carried: carried.value,
-                    });
-                }
             }
         }
 
@@ -687,8 +729,8 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                 if other == stating {
                     continue;
                 }
-                let state = elsewhere
-                    .stated()
+                let state = final_statements[other]
+                    .iter()
                     .find(|state| {
                         state.tick == note.tick && state.statement.channel == note.channel
                     })
