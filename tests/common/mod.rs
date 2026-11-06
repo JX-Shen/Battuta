@@ -99,6 +99,62 @@ pub fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("scratch file is writable");
 }
 
+/// Literal note events, per track, as (absolute Tick, MIDI status, key, velocity).
+/// Both NoteOff and zero-velocity NoteOn can be stated without pairing them.
+pub fn build_note_event_take(path: &Path, tracks: &[Vec<(u32, u8, u8, u8)>]) -> PathBuf {
+    use midly::num::{u15, u28, u4, u7};
+    use midly::{
+        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
+    };
+    let tracks = tracks
+        .iter()
+        .map(|events| {
+            let mut previous = 0;
+            let mut track = Vec::new();
+            for &(tick, status, key, velocity) in events {
+                let message = match status & 0xf0 {
+                    0x80 => MidiMessage::NoteOff {
+                        key: u7::new(key),
+                        vel: u7::new(velocity),
+                    },
+                    0x90 => MidiMessage::NoteOn {
+                        key: u7::new(key),
+                        vel: u7::new(velocity),
+                    },
+                    _ => panic!("note status required"),
+                };
+                track.push(TrackEvent {
+                    delta: u28::new(tick - previous),
+                    kind: TrackEventKind::Midi {
+                        channel: u4::new(status & 15),
+                        message,
+                    },
+                });
+                previous = tick;
+            }
+            track.push(TrackEvent {
+                delta: u28::new(1920 - previous),
+                kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+            });
+            track
+        })
+        .collect::<Vec<_>>();
+    Smf {
+        header: Header::new(
+            if tracks.len() == 1 {
+                Format::SingleTrack
+            } else {
+                Format::Parallel
+            },
+            Timing::Metrical(u15::new(480)),
+        ),
+        tracks,
+    }
+    .save(path)
+    .expect("literal Take is writable");
+    path.to_path_buf()
+}
+
 /// The Take's event stream, rendered so two Takes can be compared for identity.
 ///
 /// This is the *event-level* reading of "identical" that ADR-0003 settles on:

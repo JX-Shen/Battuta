@@ -36,6 +36,95 @@ use std::path::{Path, PathBuf};
 const BACH: &str = "fixtures/external/mutopia-bach-bwv208.mid";
 const GROOVE: &str = "fixtures/external/groove-drummer8-funk.mid";
 
+/// #77: these sides are independent literal files, including the old writer's
+/// erroneous resize result. No `apply` run creates or approves the evidence.
+#[test]
+fn an_account_that_captures_an_unmatched_release_is_refused() {
+    for release_status in [0x80, 0x90] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let a = common::build_note_event_take(
+            &dir.path().join("A.mid"),
+            &[vec![
+                (240, 0x90, 60, 90),
+                (400, release_status, 60, 0),
+                (480, release_status, 60, 0),
+            ]],
+        );
+        let b = common::build_note_event_take(
+            &dir.path().join("B.mid"),
+            &[vec![
+                (240, 0x90, 60, 90),
+                (480, release_status, 60, 0),
+                (720, release_status, 60, 0),
+            ]],
+        );
+        let c = common::build_note_event_take(
+            &dir.path().join("C.mid"),
+            &[vec![
+                (240, 0x90, 60, 70),
+                (400, release_status, 60, 0),
+                (480, release_status, 60, 0),
+            ]],
+        );
+        let b_edits = common::edit_set(
+            dir.path(),
+            "B",
+            r#"{"kind":"resize_note","id":"t0:c0:p60:s240:n0","delta_ticks":320}"#,
+        );
+        let c_edits = common::edit_set(
+            dir.path(),
+            "C",
+            r#"{"kind":"set_velocity","id":"t0:c0:p60:s240:n0","velocity":70}"#,
+        );
+        let inputs = [&a, &b, &c, &b_edits, &c_edits];
+        let before = inputs.map(|path| std::fs::read(path).expect("readable"));
+        for swapped in [false, true] {
+            let sides = if swapped {
+                [(&c, &c_edits), (&b, &b_edits)]
+            } else {
+                [(&b, &b_edits), (&c, &c_edits)]
+            };
+            for existing in [false, true] {
+                let output = dir.path().join(format!("D-{swapped}-{existing}.mid"));
+                if existing {
+                    std::fs::write(&output, b"previous output").expect("writable");
+                }
+                mid()
+                    .arg("combine")
+                    .arg(&a)
+                    .arg("--side")
+                    .arg(sides[0].0)
+                    .arg(sides[0].1)
+                    .arg("--side")
+                    .arg(sides[1].0)
+                    .arg(sides[1].1)
+                    .arg("-o")
+                    .arg(&output)
+                    .assert()
+                    .failure()
+                    .stderr(predicates::str::contains(if swapped {
+                        "side 1"
+                    } else {
+                        "side 0"
+                    }))
+                    .stderr(predicates::str::contains("B.mid"))
+                    .stderr(predicates::str::contains("release"));
+                for (path, bytes) in inputs.iter().zip(&before) {
+                    assert_eq!(std::fs::read(path).expect("input retained"), *bytes);
+                }
+                if existing {
+                    assert_eq!(
+                        std::fs::read(&output).expect("output retained"),
+                        b"previous output"
+                    );
+                } else {
+                    assert!(!output.exists());
+                }
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------ reading --
 
 /// One event as these tests see it: its Tick, its content spelled out, and —

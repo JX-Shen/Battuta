@@ -6,6 +6,253 @@ use common::{
 };
 use std::path::Path;
 
+// #77: drive the file-writing boundary; the source events are literal, and a
+// refusal must protect both an absent output and an existing output.
+fn refuses_captured_release(name: &str, events: &[(u32, u8, u8, u8)], edit: &str) {
+    for release_status in [0x80, 0x90] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let events = events
+            .iter()
+            .map(|&(tick, status, pitch, vel)| {
+                (
+                    tick,
+                    if status == 0x80 {
+                        release_status
+                    } else {
+                        status
+                    },
+                    pitch,
+                    vel,
+                )
+            })
+            .collect::<Vec<_>>();
+        let input = common::build_note_event_take(&dir.path().join("source.mid"), &[events]);
+        let before = std::fs::read(&input).expect("input readable");
+        let edits = edit_set(dir.path(), name, edit);
+        for existing in [false, true] {
+            let output = dir.path().join("output.mid");
+            if existing {
+                std::fs::write(&output, b"previous output").expect("writable");
+            }
+            mid()
+                .arg("apply")
+                .arg(&input)
+                .arg(&edits)
+                .arg("-o")
+                .arg(&output)
+                .assert()
+                .failure()
+                .stderr(predicates::str::contains("release"));
+            assert_eq!(std::fs::read(&input).expect("input retained"), before);
+            if existing {
+                assert_eq!(
+                    std::fs::read(&output).expect("output retained"),
+                    b"previous output"
+                );
+            } else {
+                assert!(!output.exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn moving_across_an_unmatched_release_is_refused() {
+    refuses_captured_release(
+        "move",
+        &[(480, 0x80, 60, 0), (960, 0x90, 60, 90), (1440, 0x80, 60, 0)],
+        r#"{"kind":"move_note","id":"t0:c0:p60:s960:n0","delta_ticks":-720}"#,
+    );
+}
+
+#[test]
+fn adding_across_an_unmatched_release_is_refused() {
+    refuses_captured_release(
+        "add",
+        &[(480, 0x80, 60, 0)],
+        r#"{"kind":"add_note","track":0,"channel":0,"pitch":60,"start":240,"duration":480,"velocity":90}"#,
+    );
+}
+
+#[test]
+fn transposing_onto_an_unmatched_release_is_refused() {
+    refuses_captured_release(
+        "transpose",
+        &[
+            (960, 0x90, 61, 90),
+            (1100, 0x80, 60, 0),
+            (1440, 0x80, 61, 0),
+        ],
+        r#"{"kind":"transpose_note","id":"t0:c0:p61:s960:n0","semitones":-1}"#,
+    );
+}
+
+#[test]
+fn extending_across_an_unmatched_release_is_refused() {
+    refuses_captured_release(
+        "resize",
+        &[(240, 0x90, 60, 90), (400, 0x80, 60, 0), (480, 0x80, 60, 0)],
+        r#"{"kind":"resize_note","id":"t0:c0:p60:s240:n0","delta_ticks":320}"#,
+    );
+}
+
+#[test]
+fn moving_a_zero_length_note_cannot_write_an_unterminated_result() {
+    refuses_captured_release(
+        "move-zero-length",
+        &[(0, 0x90, 60, 90), (0, 0x80, 60, 0)],
+        r#"{"kind":"move_note","id":"t0:c0:p60:s0:n0","delta_ticks":120}"#,
+    );
+}
+
+#[test]
+fn safe_note_moves_keep_unmatched_releases_and_requested_lengths() {
+    // Target note is 240..720. The release is outside it, at its endpoint,
+    // or inside it but at another address. Both release spellings survive.
+    for release_status in [0x80, 0x90] {
+        for (tick, channel, pitch, other_track) in [
+            (120, 0, 60, false),
+            (800, 0, 60, false),
+            (240, 0, 60, false),
+            (720, 0, 60, false),
+            (480, 0, 61, false),
+            (480, 1, 60, false),
+            (480, 0, 60, true),
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let orphan = (tick, release_status | channel, pitch, 0);
+            let mut source = vec![(960, 0x90, 60, 90), (1440, release_status, 60, 0)];
+            let mut expected = vec![(240, 0x90, 60, 90), (720, release_status, 60, 0)];
+            let (source_tracks, expected_tracks) = if other_track {
+                (vec![source, vec![orphan]], vec![expected, vec![orphan]])
+            } else {
+                source.push(orphan);
+                expected.push(orphan);
+                // A moved strike follows the carried release at Tick 240;
+                // a moved release precedes the carried release at Tick 720.
+                source.sort_by_key(|event| event.0);
+                expected.sort_by_key(|event| (event.0, event.1 == 0x90 && event.3 > 0));
+                (vec![source], vec![expected])
+            };
+            let input =
+                common::build_note_event_take(&dir.path().join("input.mid"), &source_tracks);
+            let wanted =
+                common::build_note_event_take(&dir.path().join("wanted.mid"), &expected_tracks);
+            let output = dir.path().join("output.mid");
+            mid()
+                .arg("apply")
+                .arg(&input)
+                .arg(edit_set(
+                    dir.path(),
+                    "move",
+                    r#"{"kind":"move_note","id":"t0:c0:p60:s960:n0","delta_ticks":-720}"#,
+                ))
+                .arg("-o")
+                .arg(&output)
+                .assert()
+                .success();
+            assert_eq!(event_stream(&output), event_stream(&wanted));
+        }
+    }
+}
+
+#[test]
+fn unmatched_releases_survive_empty_safe_and_finally_retracted_changes() {
+    for release_status in [0x80, 0x90] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let original = vec![
+            (240, 0x90, 60, 90),
+            (400, release_status, 60, 0),
+            (480, release_status, 60, 0),
+        ];
+        let input = common::build_note_event_take(
+            &dir.path().join("input.mid"),
+            std::slice::from_ref(&original),
+        );
+        for (name, edits, expected) in [
+            ("empty", "", original.clone()),
+            (
+                "velocity",
+                r#"{"kind":"set_velocity","id":"t0:c0:p60:s240:n0","velocity":70}"#,
+                vec![
+                    (240, 0x90, 60, 70),
+                    (400, release_status, 60, 0),
+                    (480, release_status, 60, 0),
+                ],
+            ),
+            (
+                "retracted",
+                r#"{"kind":"resize_note","id":"t0:c0:p60:s240:n0","delta_ticks":320},
+                {"kind":"resize_note","id":"t0:c0:p60:s240:n0","delta_ticks":-320}"#,
+                original.clone(),
+            ),
+            (
+                "deleted",
+                r#"{"kind":"move_note","id":"t0:c0:p60:s240:n0","delta_ticks":120},
+                {"kind":"delete_note","id":"t0:c0:p60:s240:n0"}"#,
+                vec![(480, release_status, 60, 0)],
+            ),
+        ] {
+            let output = dir.path().join(format!("{name}.mid"));
+            let wanted = common::build_note_event_take(&dir.path().join("wanted.mid"), &[expected]);
+            mid()
+                .arg("apply")
+                .arg(&input)
+                .arg(edit_set(dir.path(), name, edits))
+                .arg("-o")
+                .arg(&output)
+                .assert()
+                .success();
+            assert_eq!(event_stream(&output), event_stream(&wanted), "{name}");
+        }
+    }
+}
+
+#[test]
+fn pairing_validation_keeps_zero_lengths_and_equal_tick_release_exchanges() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let events = vec![
+        (0, 0x90, 60, 90),
+        (0, 0x80, 60, 10),
+        (240, 0x90, 60, 80),
+        (360, 0x90, 60, 70),
+        (720, 0x80, 60, 20),
+        (720, 0x80, 60, 30),
+        (800, 0x80, 60, 40),
+    ];
+    let input =
+        common::build_note_event_take(&dir.path().join("input.mid"), std::slice::from_ref(&events));
+    for (name, edits, expected) in [
+        ("empty", "", events.clone()),
+        (
+            "exchange",
+            r#"{"kind":"resize_note","id":"t0:c0:p60:s360:n0","delta_ticks":120},
+            {"kind":"resize_note","id":"t0:c0:p60:s360:n0","delta_ticks":-120}"#,
+            vec![
+                (0, 0x90, 60, 90),
+                (0, 0x80, 60, 10),
+                (240, 0x90, 60, 80),
+                (360, 0x90, 60, 70),
+                (720, 0x80, 60, 30),
+                (720, 0x80, 60, 20),
+                (800, 0x80, 60, 40),
+            ],
+        ),
+    ] {
+        let output = dir.path().join(format!("{name}.mid"));
+        let wanted = common::build_note_event_take(&dir.path().join("wanted.mid"), &[expected]);
+        mid()
+            .arg("apply")
+            .arg(&input)
+            .arg(edit_set(dir.path(), name, edits))
+            .arg("-o")
+            .arg(&output)
+            .assert()
+            .success();
+        assert_eq!(event_stream(&output), event_stream(&wanted));
+    }
+}
+
 /// The property, not a snapshot: two runs have to *agree*, which is a relation a
 /// stored blob cannot express. See ADR-0003 for what "identical" means here.
 #[test]

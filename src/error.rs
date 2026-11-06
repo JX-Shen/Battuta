@@ -183,6 +183,18 @@ pub enum Error {
         second: u32,
     },
 
+    #[error(
+        "note {id} would be released at tick {actual} rather than the requested tick {expected}. \
+         A carried release would end a different note after this Edit Set. Move or resize the \
+         note so it does not cross that release, or use another pitch or channel. \
+         Nothing has been written."
+    )]
+    NoteReleaseChanged {
+        id: String,
+        expected: u32,
+        actual: u32,
+    },
+
     #[error("track {track} is not in the Take; it has {tracks} tracks, numbered from 0")]
     NoSuchTrack { track: i64, tracks: usize },
 

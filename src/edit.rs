@@ -421,7 +421,7 @@ pub(crate) fn apply_traced(
             }
         }
     }
-    stay_distinct(&tracks, &sounding)?;
+    let expected = stay_distinct(&tracks, &sounding)?;
     stay_rankable(&tracks, allowed)?;
     for (number, track) in tracks.iter().enumerate() {
         track.stay_placed(number)?;
@@ -436,7 +436,27 @@ pub(crate) fn apply_traced(
             Ok(events)
         })
         .collect::<Result<_>>()?;
-    Ok((Take::from_smf(&smf)?, origins))
+    let result = Take::from_smf(&smf)?;
+    // Read every release in the finished Take, including carried releases
+    // that ended no note in the input (#77).
+    let found: BTreeMap<_, _> = result
+        .notes()?
+        .into_iter()
+        .map(|note| (note.id, note.start + note.duration))
+        .collect();
+    for (id, expected) in expected {
+        let actual = found
+            .get(&id)
+            .ok_or_else(|| Error::NoteEventsLost(id.to_string()))?;
+        if *actual != expected {
+            return Err(Error::NoteReleaseChanged {
+                id: id.to_string(),
+                expected,
+                actual: *actual,
+            });
+        }
+    }
+    Ok((result, origins))
 }
 
 /// The two slots carrying one note of the Take being built.
@@ -467,7 +487,8 @@ struct Sounding {
     released: u32,
 }
 
-/// Refuse a Take whose notes would not come back the way they went in.
+/// Refuse inverted note endings and return expected identities and release
+/// Ticks for checking the finished Take (#77).
 ///
 /// A note-off names a channel and a pitch, never the note-on it ends, so a
 /// reader hands the first release to the earliest note of that channel and pitch
@@ -480,7 +501,7 @@ struct Sounding {
 /// Notes no Edit touched cannot reach this. They kept the slots they were paired
 /// in, and pairing produced them in finishing order to begin with — so anything
 /// caught here is something an Edit did.
-fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<()> {
+fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<Vec<(NoteId, u32)>> {
     let mut grouped: BTreeMap<Addressed, Vec<Sounding>> = BTreeMap::new();
     for note in sounding {
         let track = &tracks[note.track];
@@ -503,6 +524,7 @@ fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<()> {
             });
     }
 
+    let mut expected = Vec::new();
     for (addressed, mut notes) in grouped {
         notes.sort();
         // Struck in this order, they have to be released in it too: a reader
@@ -519,8 +541,28 @@ fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<()> {
                 });
             }
         }
+        let mut previous = None;
+        let mut occurrence = 0;
+        for note in notes {
+            if previous == Some(note.strike.0) {
+                occurrence += 1;
+            } else {
+                occurrence = 0;
+                previous = Some(note.strike.0);
+            }
+            expected.push((
+                NoteId::new(
+                    addressed.track,
+                    addressed.channel,
+                    addressed.pitch,
+                    note.strike.0,
+                    occurrence,
+                ),
+                note.released,
+            ));
+        }
     }
-    Ok(())
+    Ok(expected)
 }
 
 /// One site the run is allowed to leave unranked: a channel-state statement's
