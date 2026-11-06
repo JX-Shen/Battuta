@@ -377,6 +377,39 @@ pub enum Error {
     },
 
     #[error(
+        "this passage would put CC{controller} on channel {channel} from tick {stated_tick} on \
+         track {stated_track} and Reset All Controllers from tick {reset_tick} on track \
+         {reset_track} at its first Tick. The Take orders them by Tick. On different tracks the \
+         passage would state no order between them, leaving a value or reset possible. \
+         Nothing has been written.\n\n\
+         Play the whole Take, or choose a passage that does not collapse these events."
+    )]
+    PassageWouldLoseControllerResetOrder {
+        controller: u8,
+        channel: u8,
+        stated_track: usize,
+        stated_tick: u32,
+        reset_track: usize,
+        reset_tick: u32,
+    },
+
+    #[error(
+        "at tick {tick}, after this Edit Set, track {stating} and track {stated} leave a {state} \
+         for channel {channel} unordered against Reset All Controllers. The file states no order \
+         between these tracks, leaving a value or reset possible. Nothing has been written.\n\n\
+         Move the statement to another Tick or resolve the other track's final state. If you \
+         know what you are doing here, name the affected Controller site: \
+         --allow-unranked t{stating}:c{channel}:s{tick}"
+    )]
+    ControllerUnrankedAgainstReset {
+        stating: usize,
+        stated: usize,
+        tick: u32,
+        channel: u8,
+        state: String,
+    },
+
+    #[error(
         "--allow-unranked {0} is not a site. A site is a track, a channel and a tick, in that \
          order and spelled as a note's identity spells them: t2:c0:s1920."
     )]

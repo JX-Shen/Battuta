@@ -1,9 +1,9 @@
-use crate::controller::FIRST_CHANNEL_MODE;
+use crate::controller::{FIRST_CHANNEL_MODE, RESET_ALL_CONTROLLERS};
 use crate::error::{Error, Result};
 use crate::note::{Note, NoteId};
 use crate::reading::{Candidate, Reading, Timeline};
 use crate::take::Take;
-use crate::track::{Placement, Rewrite, Statement};
+use crate::track::{ChannelState, Placement, Rewrite, Statement};
 use midly::num::{u4, u7};
 use midly::{MidiMessage, TrackEventKind};
 use serde::Deserialize;
@@ -643,23 +643,51 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
         .iter()
         .map(|track| track.stated().collect())
         .collect();
-    let mut statements: BTreeMap<Statement, Vec<Candidate<u8>>> = BTreeMap::new();
+    let mut statements: BTreeMap<Statement, Vec<_>> = BTreeMap::new();
+    let mut resets: BTreeMap<u8, Vec<_>> = BTreeMap::new();
     for (track, stated) in final_statements.iter().enumerate() {
-        for state in stated {
-            statements
-                .entry(state.statement)
-                .or_default()
-                .push(Candidate {
+        for (order, state) in stated.iter().enumerate() {
+            let reset = state.statement.state == ChannelState::Controller(RESET_ALL_CONTROLLERS);
+            let candidate = (
+                order,
+                Candidate {
                     track,
                     track_names: Vec::new().into(),
                     tick: state.tick,
-                    value: state.value,
-                });
+                    value: (!reset).then_some(state.value),
+                },
+            );
+            if reset {
+                resets
+                    .entry(state.statement.channel)
+                    .or_default()
+                    .push(candidate);
+            } else if !matches!(state.statement.state, ChannelState::Controller(number) if number >= FIRST_CHANNEL_MODE)
+            {
+                statements
+                    .entry(state.statement)
+                    .or_default()
+                    .push(candidate);
+            }
         }
     }
     let timelines: BTreeMap<_, _> = statements
         .into_iter()
-        .map(|(statement, values)| (statement, Timeline::read(values)))
+        .map(|(statement, mut values)| {
+            let timeline = if matches!(statement.state, ChannelState::Controller(_)) {
+                values.extend(
+                    resets
+                        .get(&statement.channel)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+                crate::controller::timeline(&crate::controller::ordered_effects(values))
+            } else {
+                Timeline::read(values.into_iter().map(|(_, candidate)| candidate))
+            };
+            (statement, timeline)
+        })
         .collect();
     for (stating, track) in tracks.iter().enumerate() {
         for (tick, statement) in track.affected_states() {
@@ -682,14 +710,23 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                 .iter()
                 .find(|candidate| candidate.value != own.value)
             {
+                if own.value.is_none() || other.value.is_none() {
+                    return Err(Error::ControllerUnrankedAgainstReset {
+                        stating,
+                        stated: other.track,
+                        tick,
+                        channel: statement.channel,
+                        state: statement.state.named(),
+                    });
+                }
                 return Err(Error::StatesUnrankedAgainstEachOther {
                     stating,
                     stated: other.track,
                     tick,
                     channel: statement.channel,
                     state: statement.state.named(),
-                    asked: own.value,
-                    carried: other.value,
+                    asked: own.value.expect("a numeric statement"),
+                    carried: other.value.expect("a numeric statement"),
                 });
             }
         }

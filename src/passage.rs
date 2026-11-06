@@ -64,6 +64,7 @@ struct Landing {
     state: Option<(State, Option<u8>, i32)>,
     /// The Tick this event held in the Take the passage was cut from.
     from: u32,
+    reset: bool,
 }
 
 /// Refuse a passage that would state no order where the Take stated one.
@@ -115,6 +116,18 @@ fn keeps_the_orders_the_take_stated(landings: &[Landing]) -> Result<()> {
                         channel: state.channel.expect("a ranked channel event"),
                         state: left.pair.governing_named(),
                         against: left.pair.governed_named(),
+                    });
+                }
+            }
+            if let Some((State::Controller, Some(controller), _)) = state.state {
+                if other.reset {
+                    return Err(Error::PassageWouldLoseControllerResetOrder {
+                        controller,
+                        channel: state.channel.expect("a Controller channel"),
+                        stated_track: state.track,
+                        stated_tick: state.from,
+                        reset_track: other.track,
+                        reset_tick: other.from,
                     });
                 }
             }
@@ -220,13 +233,17 @@ fn restricted<'a>(
             }
             _ => return,
         };
-        if role.is_some() || state.is_some() {
+        let reset = matches!(kind, TrackEventKind::Midi {
+            message: MidiMessage::Controller { controller, .. }, ..
+        } if controller.as_int() == crate::controller::RESET_ALL_CONTROLLERS);
+        if role.is_some() || state.is_some() || reset {
             landings.push(Landing {
                 track: index_of_track,
                 channel,
                 role,
                 state,
                 from,
+                reset,
             });
         }
     };

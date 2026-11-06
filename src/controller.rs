@@ -98,7 +98,7 @@ pub const FIRST_CHANNEL_MODE: u8 = 120;
 /// The channel mode message a Controller reading answers for: it ends the
 /// value in force of every Controller its channel holds, so a reading across
 /// it reads as reset — #63.
-const RESET_ALL_CONTROLLERS: u8 = 121;
+pub(crate) const RESET_ALL_CONTROLLERS: u8 = 121;
 
 /// One place a Take states a Controller, and which event of its track says so.
 ///
@@ -146,7 +146,7 @@ pub(crate) fn said(
     channel: u8,
     controller: u8,
 ) -> Vec<Candidate<Option<u8>>> {
-    let mut said: Vec<_> = statements
+    let said: Vec<_> = statements
         .iter()
         .filter(|found| found.stated.channel == channel && found.stated.controller == controller)
         .map(|found| {
@@ -162,25 +162,42 @@ pub(crate) fn said(
             )
         })
         .collect();
-    let Some(first) = said.iter().map(|(_, said)| said.tick).min() else {
+    ordered_effects(
+        said.into_iter()
+            .chain(
+                resets
+                    .iter()
+                    .filter(|reset| reset.channel == channel)
+                    .map(|reset| {
+                        (
+                            reset.event,
+                            Candidate {
+                                track: reset.track,
+                                track_names: reset.track_names.clone(),
+                                tick: reset.tick,
+                                value: None,
+                            },
+                        )
+                    }),
+            )
+            .collect(),
+    )
+}
+
+/// Controller statements and channel resets in final within-track order.
+/// Resets before the first statement leave the Controller unstated (#63, #79).
+pub(crate) fn ordered_effects(
+    mut said: Vec<(usize, Candidate<Option<u8>>)>,
+) -> Vec<Candidate<Option<u8>>> {
+    let Some(first) = said
+        .iter()
+        .filter(|(_, said)| said.value.is_some())
+        .map(|(_, said)| said.tick)
+        .min()
+    else {
         return Vec::new();
     };
-    said.extend(
-        resets
-            .iter()
-            .filter(|reset| reset.channel == channel && reset.tick >= first)
-            .map(|reset| {
-                (
-                    reset.event,
-                    Candidate {
-                        track: reset.track,
-                        track_names: reset.track_names.clone(),
-                        tick: reset.tick,
-                        value: None,
-                    },
-                )
-            }),
-    );
+    said.retain(|(_, said)| said.tick >= first);
     said.sort_by_key(|(event, said)| (said.tick, said.track, *event));
     said.into_iter().map(|(_, said)| said).collect()
 }

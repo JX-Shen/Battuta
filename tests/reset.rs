@@ -548,3 +548,316 @@ fn a_reset_unranked_against_a_statement_is_indeterminate() {
         "{said}"
     );
 }
+
+// #79: process checks use literal MIDI, including the reset that is not an Edit target.
+fn raw_controls(path: &Path) -> Vec<(usize, u32, u8, u8, u8)> {
+    let bytes = std::fs::read(path).unwrap();
+    let smf = Smf::parse(&bytes).unwrap();
+    let mut found = Vec::new();
+    for (track, events) in smf.tracks.iter().enumerate() {
+        let mut tick = 0;
+        for event in events {
+            tick += event.delta.as_int();
+            if let TrackEventKind::Midi {
+                channel,
+                message: MidiMessage::Controller { controller, value },
+            } = event.kind
+            {
+                found.push((
+                    track,
+                    tick,
+                    channel.as_int(),
+                    controller.as_int(),
+                    value.as_int(),
+                ));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn edited_controller_opposite_a_reset_requires_its_exact_site() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = common::build_state_tracks(
+        &dir.path().join("source.mid"),
+        &[vec![(0, control(0, 11, 80))], vec![(480, reset(0))]],
+    );
+    let edit =
+        r#"{"kind":"set_controller","track":0,"channel":0,"controller":11,"tick":480,"value":100}"#;
+    for allowed in [
+        &[][..],
+        &["t1:c0:s480"][..],
+        &["t0:c1:s480"][..],
+        &["t0:c0:s0"][..],
+    ] {
+        common::apply_state_case(&source, edit, allowed, false);
+    }
+    let out = common::apply_state_case(&source, edit, &["t0:c0:s480"], true);
+    assert_eq!(
+        raw_controls(&out),
+        vec![(0, 0, 0, 11, 80), (0, 480, 0, 11, 100), (1, 480, 0, 121, 0)]
+    );
+}
+
+#[test]
+fn removing_or_moving_a_controller_exposes_a_source_reset_conflict() {
+    for action in [
+        r#""kind":"delete_controller""#,
+        r#""kind":"move_controller","delta_ticks":480"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = common::build_state_tracks(
+            &dir.path().join("source.mid"),
+            &[
+                vec![
+                    (480, control(0, 11, 70)),
+                    (480, reset(0)),
+                    (480, control(0, 11, 70)),
+                ],
+                vec![(480, control(0, 11, 70))],
+            ],
+        );
+        let edit = format!(r#"{{{action},"track":0,"channel":0,"controller":11,"tick":480}}"#);
+        for allowed in [&[][..], &["t1:c0:s480"][..], &["t0:c0:s960"][..]] {
+            common::apply_state_case(&source, &edit, allowed, false);
+        }
+        let out = common::apply_state_case(&source, &edit, &["t0:c0:s480"], true);
+        let mut expected = vec![(0, 480, 0, 11, 70), (0, 480, 0, 121, 0)];
+        if action.contains("move") {
+            expected.push((0, 960, 0, 11, 70));
+        }
+        expected.push((1, 480, 0, 11, 70));
+        assert_eq!(raw_controls(&out), expected);
+    }
+}
+
+#[test]
+fn reset_checks_read_the_final_batch_and_preserve_safe_orders() {
+    let cases = [
+        (
+            vec![vec![(480, reset(0))], vec![]],
+            r#"{"kind":"set_controller","track":0,"channel":0,"controller":11,"tick":480,"value":70}"#,
+            vec![(0, 480, 0, 121, 0), (0, 480, 0, 11, 70)],
+        ),
+        (
+            vec![vec![], vec![(480, reset(1))]],
+            r#"{"kind":"set_controller","track":0,"channel":0,"controller":11,"tick":480,"value":70}"#,
+            vec![(0, 480, 0, 11, 70), (1, 480, 1, 121, 0)],
+        ),
+        (
+            vec![vec![], vec![(0, reset(0))]],
+            r#"{"kind":"set_controller","track":0,"channel":0,"controller":11,"tick":480,"value":70}"#,
+            vec![(0, 480, 0, 11, 70), (1, 0, 0, 121, 0)],
+        ),
+        (
+            vec![vec![], vec![(480, reset(0))]],
+            r#"{"kind":"set_controller","track":0,"channel":0,"controller":11,"tick":480,"value":70},{"kind":"set_controller","track":1,"channel":0,"controller":11,"tick":480,"value":70}"#,
+            vec![
+                (0, 480, 0, 11, 70),
+                (1, 480, 0, 121, 0),
+                (1, 480, 0, 11, 70),
+            ],
+        ),
+    ];
+    for (tracks, edits, expected) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let source = common::build_state_tracks(&dir.path().join("safe.mid"), &tracks);
+        let out = common::apply_state_case(&source, edits, &[], true);
+        assert_eq!(raw_controls(&out), expected);
+    }
+}
+
+#[test]
+fn unrelated_edits_preserve_carried_reset_ambiguity() {
+    for edits in [
+        "",
+        r#"{"kind":"set_controller","track":0,"channel":1,"controller":11,"tick":960,"value":50}"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = common::build_state_tracks(
+            &dir.path().join("carried.mid"),
+            &[vec![(480, control(0, 11, 70))], vec![(480, reset(0))]],
+        );
+        let out = common::apply_state_case(&source, edits, &[], true);
+        let mut expected = vec![(0, 480, 0, 11, 70)];
+        if !edits.is_empty() {
+            expected.push((0, 960, 1, 11, 50));
+        }
+        expected.push((1, 480, 0, 121, 0));
+        assert_eq!(raw_controls(&out), expected);
+    }
+}
+
+#[test]
+fn passage_reset_order_loss_is_refused_before_play_or_render_starts() {
+    for command in ["play", "render"] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = take(
+            dir.path(),
+            "source.mid",
+            &[
+                vec![
+                    (0, control(0, 11, 80)),
+                    (2000, strike(60)),
+                    (2400, release(60)),
+                ],
+                vec![(480, reset(0))],
+            ],
+        );
+        let before = std::fs::read(&source).unwrap();
+        let rig = common::fake_soundfont(&dir.path().join("rig.sf2"));
+        let fake = common::fake_fluidsynth(dir.path());
+        // The ordinary fake omits version calls from its log. This one records every invocation.
+        let invoked = dir.path().join("invoked");
+        let script = format!("#!/bin/sh\n: > '{}'\nexit 0\n", invoked.display());
+        std::fs::write(fake.dir.join("fluidsynth"), script).unwrap();
+        let temp = dir.path().join("temporary");
+        std::fs::create_dir(&temp).unwrap();
+        let out = dir.path().join("out.wav");
+        for existing in [false, true] {
+            if existing {
+                std::fs::write(&out, b"existing output").unwrap();
+            }
+            let mut process = common::mid();
+            process
+                .arg(command)
+                .arg(&source)
+                .args(["--bars", "2:2", "--rig"])
+                .arg(&rig)
+                .env("PATH", &fake.dir)
+                .env("TMPDIR", &temp);
+            if command == "render" {
+                process.arg("-o").arg(&out);
+            }
+            let result = process.output().unwrap();
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert_eq!(result.status.code(), Some(1), "{command}: {stderr}");
+            for text in [
+                "CC11",
+                "Reset All Controllers",
+                "track 1",
+                "track 2",
+                "would state no order",
+                "Nothing has been written",
+            ] {
+                assert!(stderr.contains(text), "{command} missing {text}: {stderr}");
+            }
+            assert!(
+                !invoked.exists(),
+                "even the synthesiser version must not be invoked"
+            );
+            assert!(!fake.handed.exists());
+            assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+            assert_eq!(std::fs::read(&source).unwrap(), before);
+            if existing {
+                assert_eq!(std::fs::read(&out).unwrap(), b"existing output");
+            } else {
+                assert!(!out.exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn safe_reset_passages_keep_literal_events_and_carried_ambiguity() {
+    let cases = [
+        (
+            vec![vec![(0, control(0, 11, 80)), (480, reset(0))]],
+            vec![(1, 0, 0, 11, 80), (1, 0, 0, 121, 0)],
+        ),
+        (
+            vec![vec![(0, reset(0)), (480, control(0, 11, 80))]],
+            vec![(1, 0, 0, 121, 0), (1, 0, 0, 11, 80)],
+        ),
+        (
+            vec![vec![
+                (0, control(0, 11, 80)),
+                (480, reset(0)),
+                (600, control(0, 11, 70)),
+            ]],
+            vec![(1, 0, 0, 11, 80), (1, 0, 0, 121, 0), (1, 0, 0, 11, 70)],
+        ),
+        (
+            vec![vec![(0, control(0, 11, 80))], vec![(480, reset(1))]],
+            vec![(1, 0, 0, 11, 80), (2, 0, 1, 121, 0)],
+        ),
+        (
+            vec![vec![(480, control(0, 11, 80))], vec![(480, reset(0))]],
+            vec![(1, 0, 0, 11, 80), (2, 0, 0, 121, 0)],
+        ),
+    ];
+    for (mut tracks, expected) in cases {
+        tracks[0].extend([(2000, strike(60)), (2400, release(60))]);
+        for command in ["play", "render"] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = take(dir.path(), "safe.mid", &tracks);
+            let before = std::fs::read(&source).unwrap();
+            let rig = common::fake_soundfont(&dir.path().join("rig.sf2"));
+            let fake = common::fake_fluidsynth(dir.path());
+            std::fs::write(&fake.renders, b"RIFF\x04\x00\x00\x00WAVE").unwrap();
+            let mut process = common::mid();
+            process
+                .arg(command)
+                .arg(&source)
+                .args(["--bars", "2:2", "--rig"])
+                .arg(&rig)
+                .env("PATH", &fake.dir);
+            let out = dir.path().join("out.wav");
+            if command == "render" {
+                process.arg("-o").arg(&out);
+            }
+            let result = process.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{command}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(raw_controls(&fake.handed), expected);
+            let bytes = std::fs::read(&fake.handed).unwrap();
+            let smf = Smf::parse(&bytes).unwrap();
+            let mut tick = 0;
+            let notes: Vec<_> = smf.tracks[1]
+                .iter()
+                .filter_map(|event| {
+                    tick += event.delta.as_int();
+                    match event.kind {
+                        TrackEventKind::Midi {
+                            channel,
+                            message: MidiMessage::NoteOn { key, vel },
+                        } => Some((tick, channel.as_int(), key.as_int(), vel.as_int(), true)),
+                        TrackEventKind::Midi {
+                            channel,
+                            message: MidiMessage::NoteOff { key, vel },
+                        } => Some((tick, channel.as_int(), key.as_int(), vel.as_int(), false)),
+                        _ => None,
+                    }
+                })
+                .collect();
+            assert_eq!(notes, vec![(80, 0, 60, 64, true), (480, 0, 60, 0, false)]);
+            assert_eq!(std::fs::read(&source).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn passage_reset_order_loss_has_a_typed_library_error_in_either_direction() {
+    for (statement, reset_tick) in [(0, 480), (480, 0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = take(
+            dir.path(),
+            "source.mid",
+            &[
+                vec![(statement, control(0, 11, 80))],
+                vec![(reset_tick, reset(0))],
+            ],
+        );
+        assert!(matches!(
+            battuta::Take::read(&source).unwrap().passage("2:2".parse().unwrap()).unwrap_err(),
+            battuta::Error::PassageWouldLoseControllerResetOrder {
+                controller:11, channel:0, stated_track:1, stated_tick,
+                reset_track:2, reset_tick:at,
+            } if stated_tick == statement && at == reset_tick
+        ));
+    }
+}
