@@ -830,12 +830,17 @@ fn change_note(track: &mut Rewrite, change: Change, note: &Note) -> Result<()> {
         // leave a note struck and never released, and the Take would stop being
         // readable at all.
         Change::Transpose(semitones) => {
-            let landed = i64::from(track.key(note.on_event).ok_or_else(lost)?) + semitones;
-            let pitch = midi_value(landed, 127).ok_or(Error::TransposeOutOfRange {
-                id: note.id.to_string(),
-                semitones,
-                landed,
-            })?;
+            // Keep the requested sum exact before checking the MIDI range. #81.
+            let landed =
+                i128::from(track.key(note.on_event).ok_or_else(lost)?) + i128::from(semitones);
+            let pitch = u8::try_from(landed)
+                .ok()
+                .filter(|pitch| *pitch <= 127)
+                .ok_or(Error::TransposeOutOfRange {
+                    id: note.id.to_string(),
+                    semitones,
+                    landed,
+                })?;
             for (index, placement) in both_events(note) {
                 track.set_key(index, pitch).ok_or_else(lost)?;
                 track.place_again(index, placement);
@@ -847,7 +852,7 @@ fn change_note(track: &mut Rewrite, change: Change, note: &Note) -> Result<()> {
         // here touches a neighbour.
         Change::Move(delta_ticks) => {
             for (index, placement) in both_events(note) {
-                let landed = i64::from(track.tick(index)) + delta_ticks;
+                let landed = i128::from(track.tick(index)) + i128::from(delta_ticks);
                 let tick = u32::try_from(landed).map_err(|_| Error::MoveOutOfRange {
                     id: note.id.to_string(),
                     delta_ticks,
@@ -873,8 +878,8 @@ fn change_note(track: &mut Rewrite, change: Change, note: &Note) -> Result<()> {
         // keeps the rank it was written with; carried-in order is the author's
         // (ADR-0008). See #25.
         Change::Resize(delta_ticks) => {
-            let landed = i64::from(track.tick(note.off_event)) + delta_ticks;
-            let duration = landed - i64::from(track.tick(note.on_event));
+            let landed = i128::from(track.tick(note.off_event)) + i128::from(delta_ticks);
+            let duration = landed - i128::from(track.tick(note.on_event));
             let end = u32::try_from(landed)
                 .ok()
                 .filter(|_| duration >= 1)
@@ -1094,11 +1099,13 @@ fn change_controller(
     match change {
         ControllerChange::Delete => track.remove(named.event),
         ControllerChange::Move(delta_ticks) => {
-            let from = i64::from(track.tick(named.event));
-            let moved = from
-                .checked_add(delta_ticks)
-                .and_then(|tick| u32::try_from(tick).ok())
-                .ok_or(Error::ControllerTickOutOfRange(from + delta_ticks))?;
+            let from = track.tick(named.event);
+            let landed = i128::from(from) + i128::from(delta_ticks);
+            let moved = u32::try_from(landed).map_err(|_| Error::ControllerMoveOutOfRange {
+                from,
+                delta_ticks,
+                landed,
+            })?;
             // The destination first, so that a move onto an address already
             // holding this Controller leaves the mover in force rather than
             // under it. Found before the mover is placed, or it would find the

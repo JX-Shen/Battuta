@@ -165,7 +165,7 @@ pub enum Error {
     TransposeOutOfRange {
         id: String,
         semitones: i64,
-        landed: i64,
+        landed: i128,
     },
 
     #[error(
@@ -221,8 +221,18 @@ pub enum Error {
     #[error("controller value {0} is out of range; a MIDI controller value is 0-127")]
     ControllerValueOutOfRange(i64),
 
-    #[error("a Controller cannot be stated at tick {0}; the first Tick of a Take is 0")]
+    #[error("a Controller cannot be stated at tick {0}; a Tick is 0-{max}", max = u32::MAX)]
     ControllerTickOutOfRange(i64),
+
+    #[error(
+        "moving a Controller from tick {from} by {delta_ticks} ticks lands it at {landed}; \
+         a Tick is 0-{max}", max = u32::MAX
+    )]
+    ControllerMoveOutOfRange {
+        from: u32,
+        delta_ticks: i64,
+        landed: i128,
+    },
 
     #[error(
         "no Controller is stated on track {track} channel {channel} controller {controller} at tick {tick}"
@@ -261,23 +271,23 @@ pub enum Error {
     },
 
     #[error(
-        "moving {id} by {delta_ticks} ticks lands it at {landed}, which is not a Tick; the first \
-         Tick of a Take is 0"
+        "moving {id} by {delta_ticks} ticks lands it at {landed}, which is not a Tick; \
+         a Tick is 0-{max}", max = u32::MAX
     )]
     MoveOutOfRange {
         id: String,
         delta_ticks: i64,
-        landed: i64,
+        landed: i128,
     },
 
     #[error(
         "resizing {id} by {delta_ticks} ticks leaves it {duration} ticks long; a note lasts at \
-         least 1 tick"
+         least 1 tick and must end at a Tick in 0-{max}", max = u32::MAX
     )]
     ResizeOutOfRange {
         id: String,
         delta_ticks: i64,
-        duration: i64,
+        duration: i128,
     },
 
     #[error(

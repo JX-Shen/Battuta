@@ -1644,3 +1644,268 @@ fn a_release_the_take_arrived_with_behind_a_strike_is_left_alone() {
         "the release the Take arrived with was moved, or the Edit Set was refused"
     );
 }
+
+// #81: exercise the typed library refusal and the atomic file-writing boundary.
+fn relative_range_cases(kind: &str, field: &str, cases: &[(i64, i128)]) {
+    let dir = tempfile::tempdir().unwrap();
+    let input = common::build_take_setting(
+        &dir.path().join("relative.mid"),
+        480,
+        &[(0, 4, 4)],
+        &[common::control_change(960, 11, 80)],
+        &[(960, 480, 60)],
+    );
+    let before = std::fs::read(&input).unwrap();
+    let take = battuta::Take::read(&input).unwrap();
+    for &(delta, expected) in cases {
+        let mut edit = if kind == "move_controller" {
+            serde_json::json!({"kind":kind,"track":1,"channel":0,"controller":11,"tick":960})
+        } else {
+            serde_json::json!({"kind":kind,"id":"t1:c0:p60:s960:n0"})
+        };
+        edit[field] = delta.into();
+        let set = serde_json::json!({"edits":[edit]});
+        let typed: battuta::EditSet = serde_json::from_value(set.clone()).unwrap();
+        let error = battuta::apply(&take, &typed).unwrap_err();
+        let actual = match error {
+            battuta::Error::TransposeOutOfRange {
+                semitones, landed, ..
+            } if kind == "transpose_note" => {
+                assert_eq!(semitones, delta);
+                landed
+            }
+            battuta::Error::MoveOutOfRange {
+                delta_ticks,
+                landed,
+                ..
+            } if kind == "move_note" => {
+                assert_eq!(delta_ticks, delta);
+                landed
+            }
+            battuta::Error::ResizeOutOfRange {
+                delta_ticks,
+                duration,
+                ..
+            } if kind == "resize_note" => {
+                assert_eq!(delta_ticks, delta);
+                duration
+            }
+            battuta::Error::ControllerMoveOutOfRange {
+                from,
+                delta_ticks,
+                landed,
+            } if kind == "move_controller" => {
+                assert_eq!(from, 960);
+                assert_eq!(delta_ticks, delta);
+                landed
+            }
+            other => panic!("wrong error for {kind}: {other:?}"),
+        };
+        assert_eq!(actual, expected, "{kind} delta {delta}");
+        let edits = dir.path().join("edits.json");
+        std::fs::write(&edits, set.to_string()).unwrap();
+        for existing in [false, true] {
+            let output = dir
+                .path()
+                .join(if existing { "existing.mid" } else { "new.mid" });
+            if existing {
+                std::fs::write(&output, b"SENTINEL").unwrap();
+            }
+            let result = mid()
+                .arg("apply")
+                .arg(&input)
+                .arg(&edits)
+                .arg("-o")
+                .arg(&output)
+                .output()
+                .unwrap();
+            assert_eq!(
+                result.status.code(),
+                Some(1),
+                "{kind} {delta}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let error = String::from_utf8(result.stderr).unwrap();
+            assert!(
+                error.contains(&expected.to_string()),
+                "{kind} {delta}: {error}"
+            );
+            assert!(
+                !error.contains("panicked") && !error.contains("backtrace"),
+                "{error}"
+            );
+            assert!(error.contains(&delta.to_string()), "{error}");
+            if existing {
+                assert_eq!(std::fs::read(output).unwrap(), b"SENTINEL");
+            } else {
+                assert!(!output.exists());
+            }
+            assert_eq!(std::fs::read(&input).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn relative_move_note_range_errors_are_exact() {
+    relative_range_cases(
+        "move_note",
+        "delta_ticks",
+        &[
+            (i64::MAX, 9223372036854776767),
+            (i64::MIN, -9223372036854774848),
+            (-961, -1),
+            (4294965856, 4294967296),
+        ],
+    );
+}
+
+#[test]
+fn relative_transpose_range_errors_are_exact() {
+    relative_range_cases(
+        "transpose_note",
+        "semitones",
+        &[
+            (i64::MAX, 9223372036854775867),
+            (i64::MIN, -9223372036854775748),
+            (-61, -1),
+            (68, 128),
+        ],
+    );
+}
+
+#[test]
+fn relative_resize_range_errors_are_exact() {
+    relative_range_cases(
+        "resize_note",
+        "delta_ticks",
+        &[
+            (i64::MAX, 9223372036854776287),
+            (i64::MIN, -9223372036854775328),
+            (-480, 0),
+            (4294965856, 4294966336),
+        ],
+    );
+}
+
+#[test]
+fn relative_controller_range_errors_are_exact() {
+    relative_range_cases(
+        "move_controller",
+        "delta_ticks",
+        &[
+            (i64::MAX, 9223372036854776767),
+            (i64::MIN, -9223372036854774848),
+            (-961, -1),
+            (4294966336, 4294967296),
+        ],
+    );
+}
+
+#[test]
+fn relative_edits_keep_valid_model_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut events = vec![common::control_change(960, 11, 80)];
+    // Legal gap carriers let successful edits reach the final Tick without
+    // confusing the absolute Tick boundary with the MIDI delta-time boundary.
+    for gap in 1..=16u32 {
+        events.push((
+            gap * 0x0fff_ffff,
+            midly::TrackEventKind::Meta(midly::MetaMessage::Text(b"")),
+        ));
+    }
+    events.push((
+        u32::MAX,
+        midly::TrackEventKind::Meta(midly::MetaMessage::Text(b"")),
+    ));
+    let input = common::build_take_setting(
+        &dir.path().join("boundaries.mid"),
+        480,
+        &[(0, 4, 4)],
+        &events,
+        &[(960, 480, 60)],
+    );
+    let before = std::fs::read(&input).unwrap();
+    for (kind, field, delta, on, off, pitch, controller_tick) in [
+        ("transpose_note", "semitones", -60i64, 960, 1440, 0u8, 960),
+        ("transpose_note", "semitones", 67, 960, 1440, 127, 960),
+        ("move_note", "delta_ticks", -960, 0, 480, 60, 960),
+        (
+            "move_note",
+            "delta_ticks",
+            4294965855,
+            4294966815,
+            4294967295,
+            60,
+            960,
+        ),
+        ("resize_note", "delta_ticks", -479, 960, 961, 60, 960),
+        (
+            "resize_note",
+            "delta_ticks",
+            4294965855,
+            960,
+            4294967295,
+            60,
+            960,
+        ),
+        ("move_controller", "delta_ticks", -960, 960, 1440, 60, 0),
+        (
+            "move_controller",
+            "delta_ticks",
+            4294966335,
+            960,
+            1440,
+            60,
+            4294967295,
+        ),
+    ] {
+        let mut edit = if kind == "move_controller" {
+            serde_json::json!({"kind":kind,"track":1,"channel":0,"controller":11,"tick":960})
+        } else {
+            serde_json::json!({"kind":kind,"id":"t1:c0:p60:s960:n0"})
+        };
+        edit[field] = delta.into();
+        let edits = edit_set(dir.path(), "valid", &edit.to_string());
+        let output = dir.path().join("output.mid");
+        mid()
+            .arg("apply")
+            .arg(&input)
+            .arg(&edits)
+            .arg("-o")
+            .arg(&output)
+            .assert()
+            .success();
+        let bytes = std::fs::read(&output).unwrap();
+        let smf = midly::Smf::parse(&bytes).unwrap();
+        let mut actual = Vec::new();
+        let mut tick = 0;
+        for event in &smf.tracks[1] {
+            tick += event.delta.as_int();
+            if let midly::TrackEventKind::Midi { channel, message } = event.kind {
+                assert_eq!(channel.as_int(), 0);
+                let value = match message {
+                    midly::MidiMessage::NoteOn { key, vel } => {
+                        (tick, 0x90, key.as_int(), vel.as_int())
+                    }
+                    midly::MidiMessage::NoteOff { key, vel } => {
+                        (tick, 0x80, key.as_int(), vel.as_int())
+                    }
+                    midly::MidiMessage::Controller { controller, value } => {
+                        (tick, 0xb0, controller.as_int(), value.as_int())
+                    }
+                    other => panic!("unexpected {other:?}"),
+                };
+                actual.push(value);
+            }
+        }
+        actual.sort_unstable();
+        let mut expected = vec![
+            (on, 0x90, pitch, 64),
+            (off, 0x80, pitch, 0),
+            (controller_tick, 0xb0, 11, 80),
+        ];
+        expected.sort_unstable();
+        assert_eq!(actual, expected, "{kind} {delta}");
+        assert_eq!(std::fs::read(&input).unwrap(), before);
+    }
+}
