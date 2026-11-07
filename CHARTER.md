@@ -362,7 +362,7 @@ of this, and none of them is V0.
 Chinese musical terminology is currently unstable — partly Japanese-derived
 compounds, partly whatever each DAW's localisers chose, so that 音色 / 音源 /
 音色库 routinely denote the same thing. Pinning Chinese equivalents in
-`CONTEXT.md` is done because the interaction requires it, and it may incidentally
+`GLOSSARY.md` is done because the interaction requires it, and it may incidentally
 produce a small, coherent Chinese vocabulary for this corner of the domain.
 
 That is a byproduct, stated honestly. It is not a product goal, it does not

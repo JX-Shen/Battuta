@@ -30,7 +30,7 @@ categories = ["command-line-utilities", "multimedia::audio", "parser-implementat
 include = [
     "/src/**",
     "/CHARTER.md",
-    "/CONTEXT.md",
+    "/GLOSSARY.md",
     "/LICENSE",
     "/README.md",
     "/docs/adr/**",

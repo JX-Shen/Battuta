@@ -23,7 +23,7 @@ Record only what must survive.
 ## Project
 
 Battuta is the product; `battuta` is its Rust core; `mid` is the binary it
-ships. Read `CHARTER.md` before proposing anything, and `CONTEXT.md` before
+ships. Read `CHARTER.md` before proposing anything, and `GLOSSARY.md` before
 naming anything.
 
 The one boundary that is mechanically decidable: **what is inside a Take belongs
@@ -51,7 +51,7 @@ in `CHARTER.md`, because agents are the ones most likely to break them.
   English.
 - **Every glossary term pins a Chinese equivalent**, with the same
   pick-one-and-list-the-rest discipline as the English term.
-- Before adding a term to `CONTEXT.md`, check it against these three. Before
+- Before adding a term to `GLOSSARY.md`, check it against these three. Before
   reusing an existing term differently, stop — that is a contradiction, and the
   Working Philosophy says to verify with a human.
 
@@ -340,6 +340,6 @@ The five canonical triage roles, each label string equal to its name. See `docs/
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root plus `docs/adr/`. See `docs/agents/domain.md`,
+Single-context: `GLOSSARY.md` at the root plus `docs/adr/`. See `docs/agents/domain.md`,
 and *Where a decision goes* above for the gate an ADR has to pass here, which is
 stricter than the skill's own.

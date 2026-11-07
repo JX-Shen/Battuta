@@ -16,7 +16,7 @@ thing would only create a divergence to maintain.
 
 The disciplines these skills encode — grilling a design before building it,
 resolving domain terms before naming anything, recording decisions as ADRs and
-amending them in place — are why `CHARTER.md`, `CONTEXT.md` and `docs/adr/`
+amending them in place — are why `CHARTER.md`, `GLOSSARY.md` and `docs/adr/`
 exist at all. The credit for the method belongs upstream. What is this project's
 own is the follow-through.
 

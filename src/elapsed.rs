@@ -1,6 +1,6 @@
 //! Elapsed time: where a Tick falls in seconds, by the tempos the Take states.
 //!
-//! The other derived view of a Tick beside a Position (`CONTEXT.md`), read
+//! The other derived view of a Tick beside a Position (`GLOSSARY.md`), read
 //! against the Tempo rather than the time signature. No tempo is assumed where
 //! the Take states none — #73.
 

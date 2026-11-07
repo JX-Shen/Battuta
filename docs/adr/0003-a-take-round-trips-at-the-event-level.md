@@ -81,7 +81,7 @@ never taken out in the first place.
 
 ## Amended: the third quantity has a name
 
-This record said *order* where `CONTEXT.md` now says **Rank** — where an event
+This record said *order* where `GLOSSARY.md` now says **Rank** — where an event
 falls among the events sharing its Tick. Nothing it claims has changed; the word
 had to, because `order` is spent loosely across this repository and cannot also
 be a term. ADR-0008 is what named it, and states the rule this record has always

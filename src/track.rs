@@ -47,7 +47,7 @@ struct Slot<'a> {
     /// original's own index, rather than equal to it, so a Rank can always be
     /// found between any two original Ranks; a track no Edit touched still
     /// re-encodes to exactly what it was, because spacing them preserves every
-    /// original's Rank relative to every other. See CONTEXT.md's **Rank**.
+    /// original's Rank relative to every other. See GLOSSARY.md's **Rank**.
     rank: i64,
     /// Cleared by `remove`. A slot is never taken out of the list, because
     /// taking one out would renumber every slot after it and a later Edit is

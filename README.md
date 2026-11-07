@@ -447,7 +447,7 @@ enough not to be an exercise.
 One side effect, recorded honestly rather than dressed up as a mission. Chinese
 musical terminology is unstable — 音色 / 音源 / 音色库 routinely mean the same
 thing depending on which DAW's localisers you met first. Because the human and
-the agent here converse in Chinese, [`CONTEXT.md`](./CONTEXT.md) pins a Chinese
+the agent here converse in Chinese, [`GLOSSARY.md`](./GLOSSARY.md) pins a Chinese
 equivalent for every term. It may leave behind a small, coherent vocabulary for
 this corner of the domain. It is a byproduct. It justifies no feature.
 
@@ -502,7 +502,7 @@ type.
 | | |
 | --- | --- |
 | [`CHARTER.md`](./CHARTER.md) | scope, principles and non-goals — where this README and the charter disagree, the charter is right |
-| [`CONTEXT.md`](./CONTEXT.md) | glossary; every term pins a Chinese equivalent |
+| [`GLOSSARY.md`](./GLOSSARY.md) | glossary; every term pins a Chinese equivalent |
 | [`docs/adr/`](./docs/adr/README.md) | the principles the code is built on |
 | [`docs/fixtures.md`](./docs/fixtures.md) | where each sourced test input came from, and its licence |
 | [`decision` issues](https://github.com/JX-Shen/Battuta/issues?q=label%3Adecision) | every judgement made about one behaviour, closed with the options it rejected |

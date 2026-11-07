@@ -65,7 +65,7 @@ pub struct Unranked {
 /// The values are the glossary's own terms. The type ratifies prose this
 /// repository was already writing — `error.rs` calls this a `state` and so does
 /// `wording::unranked` — rather than coining a word, which is the argument
-/// **Rank** makes about itself in `CONTEXT.md`.
+/// **Rank** makes about itself in `GLOSSARY.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {

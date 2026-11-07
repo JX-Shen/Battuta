@@ -67,7 +67,7 @@ what #43 is for.
 **This record says what a reading reports, and never which of two statements is
 the reading.** Where two tracks state one setting at one Tick, which of them a
 listener hears is not something the file says — that is ADR-0008, and
-**Unranked** in `CONTEXT.md` is the word for where the question has no answer to
+**Unranked** in `GLOSSARY.md` is the word for where the question has no answer to
 report. Nothing here decides it. A setting joining these terms does not thereby
 inherit the answer another setting was given, either: a channel's state is ranked
 against another track's writing of that channel, and a tempo, having no channel,

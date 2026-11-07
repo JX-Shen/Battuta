@@ -70,7 +70,7 @@ reports to the earlier exploratory execution.
 
 The experiment follows the existing [event preservation rule](adr/0003-a-take-round-trips-at-the-event-level.md)
 and [placement rule](adr/0008-events-sharing-one-instant-are-heard-in-the-order-they-are-written.md).
-It does not extend the [Controller reading](../CONTEXT.md) into a new public
+It does not extend the [Controller reading](../GLOSSARY.md) into a new public
 RPN interpreter; that glossary explicitly keeps the constituent Controllers
 separate.
 

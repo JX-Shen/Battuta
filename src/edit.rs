@@ -25,7 +25,7 @@ pub struct EditSet {
 ///
 /// The discriminator is `kind`, not `op`: an Edit Set contains Edits, and a key
 /// that called them operations would seed the word into every sentence written
-/// about them. See `CONTEXT.md` under **Edit**.
+/// about them. See `GLOSSARY.md` under **Edit**.
 ///
 /// Every number is `i64` on purpose. A field typed to what MIDI can hold would
 /// turn an out-of-range value into a JSON parse failure that does not say which

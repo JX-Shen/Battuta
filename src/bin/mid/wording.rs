@@ -67,7 +67,7 @@ impl Readings {
 /// A row whose Tick has no Elapsed time says nothing about it; `mid info` says
 /// why, once.
 ///
-/// Not `position`, although a Position is what it usually returns. `CONTEXT.md`
+/// Not `position`, although a Position is what it usually returns. `GLOSSARY.md`
 /// admits **Position** past **Tick**'s avoid list on the grounds that a Position
 /// is a reading of a Tick and never a Tick under another word — and this is the
 /// one function that would have made that false, by answering `tick 8640` to a
