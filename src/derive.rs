@@ -5,7 +5,7 @@ mod ppq;
 
 pub use ppq::{PpqTickRefusal, Rescaling};
 
-use crate::controller::FIRST_CHANNEL_MODE;
+use crate::controller::{FIRST_CHANNEL_MODE, RESET_ALL_CONTROLLERS};
 use crate::edit::{apply, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
 use crate::note::{match_notes, Note};
@@ -528,6 +528,13 @@ fn rank_changes(
             if before == after {
                 continue;
             }
+            let reset_before = reset_controllers(&before);
+            let reset_after = reset_controllers(&after);
+            corrections.extend(
+                reset_before
+                    .difference(&reset_after)
+                    .map(|&statement| (track, tick, statement)),
+            );
             let (_, old) = departures(&before);
             let (target_events, new) = departures(&after);
             if !new.is_subset(&old) {
@@ -706,13 +713,48 @@ fn channel_order_differences<'a>(
         }
         addresses
     }
+    let reset_before = reset_controllers(before);
+    let reset_after = reset_controllers(after);
     let before = statements(before);
     let after = statements(after);
     before
         .into_iter()
-        .filter(|(address, values)| after.get(address) != Some(values))
+        .filter(|(address, values)| {
+            if after.get(address) != Some(values) {
+                return true;
+            }
+            let (kind, channel, parameter) = *address;
+            let statement = Statement::controller(channel, parameter);
+            kind == UnreachableKind::Controller
+                && reset_before.contains(&statement) != reset_after.contains(&statement)
+        })
         .map(|((kind, _, _), _)| kind)
         .collect()
+}
+
+/// Controller addresses at this track and Tick whose last statement is
+/// followed by Reset All Controllers (#63, #91).
+fn reset_controllers(events: &[TrackEventKind<'_>]) -> BTreeSet<Statement> {
+    let mut resets = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut cleared = BTreeSet::new();
+    for event in events.iter().rev() {
+        let Some(statement) = stated_by(event) else {
+            continue;
+        };
+        match statement.state {
+            ChannelState::Controller(RESET_ALL_CONTROLLERS) => {
+                resets.insert(statement.channel);
+            }
+            ChannelState::Controller(number) if number < FIRST_CHANNEL_MODE => {
+                if seen.insert(statement) && resets.contains(&statement.channel) {
+                    cleared.insert(statement);
+                }
+            }
+            _ => {}
+        }
+    }
+    cleared
 }
 
 fn common_events<'a>(

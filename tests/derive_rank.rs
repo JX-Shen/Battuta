@@ -185,6 +185,44 @@ fn swapping_tempo_statements_changes_the_final_tempo() {
 }
 
 #[test]
+fn controller_reset_order_changes_the_value_in_force() {
+    use common::{build_state_tracks, control_change, event_stream};
+
+    let dir = tempfile::tempdir().unwrap();
+    let reset = control_change(0, 121, 0);
+    let expression = control_change(0, 11, 60);
+    let a = build_state_tracks(&dir.path().join("a.mid"), &[vec![expression, reset]]);
+    let b = build_state_tracks(&dir.path().join("b.mid"), &[vec![reset, expression]]);
+    let edits = dir.path().join("derived.json");
+
+    let refusal = derive(&b, &a, &edits).failure();
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([{"kind": "controller", "track": 0, "tick": 0}])
+    );
+    assert!(!edits.exists());
+
+    let replay = dir.path().join("replay.mid");
+    derive(&a, &b, &edits).success();
+    assert_eq!(
+        read_edits(&edits),
+        json!({"edits": [
+            {"kind": "set_controller", "track": 0, "tick": 0, "channel": 0,
+             "controller": 11, "value": 60}
+        ]})
+    );
+    mid()
+        .arg("apply")
+        .args([&a, &edits])
+        .arg("-o")
+        .arg(&replay)
+        .assert()
+        .success();
+    assert_eq!(event_stream(&replay), event_stream(&b));
+}
+
+#[test]
 fn changing_velocity_keeps_a_carried_program_order() {
     use common::{build_state_tracks, event_stream, program_change, release};
     use midly::{
