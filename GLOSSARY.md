@@ -35,6 +35,17 @@ notation — but an operation sounds large enough to carry intent, and an Edit i
 deliberately flatter than that. So the discriminator key in `edits.json` is
 `kind`, never `op`.
 
+**Derived Edit Set**:
+An Edit Set computed from two Takes rather than written by anyone: applied to
+the first, it yields the second. A written Edit Set states what was asked for;
+a derived one states only what differs, and has no author, so it is never read
+as anybody's intention.
+_中文_: 推导改动
+_Avoid_: diff, patch, delta; 差分、补丁
+
+`diff` is kept for the report a human reads in musical terms; a derived Edit
+Set is what `apply` reads.
+
 **Alternative**:
 A Take made from another by one Edit Set and kept beside it as a candidate —
 one of two answers to the same question about the same Take, neither yet

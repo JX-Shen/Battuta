@@ -25,6 +25,7 @@ why no file here supersedes another.
 | [0007](./0007-a-setting-is-reported-as-what-is-in-force.md) | A setting is reported as what is in force, never as the events that set it | What a Take holds is the answer; the events that put it there are clerical history. Why a curve is not summarised into a shape, why a tempo belongs here although it has no channel, and why anything with nothing in force falls outside every command |
 | [0008](./0008-events-sharing-one-instant-are-heard-in-the-order-they-are-written.md) | Events sharing one instant are heard in the order they are written | A Tick is a sequence carrying one timestamp, not an instant. What decides an event's Rank among its neighbours, why notation never had to answer this, where the file cannot answer it at all — and, amended, which orders a comparison reports and a combination may refuse on: the same list, read by both |
 | [0009](./0009-a-summary-never-reads-as-more-complete-than-it-is.md) | A summary never reads as more complete than it is | A summary may leave things out, but everything it states is true and its form implies nothing it does not state. Why a span reports both extremes, and why a diff that could not compare something says so |
+| [0010](./0010-there-is-one-edit-language.md) | There is one edit language, and its completeness is what it can reach | Why a change is said only in Edit Sets, why the language grows one typed kind at a time, and why what it cannot reach is refused and counted |
 
 ## How they hang together
 
@@ -66,6 +67,11 @@ as was the sentence `0004`'s amendment repeats it in, and `0007`'s refusal to
 summarise a curve into a shape stands; `0009` is a new number
 because what a summary owes about its own incompleteness reaches summaries that
 report no setting at all — a diff that could not compare something is one.
+
+`0010` stands on `0003` for what a Take is and on `0008` for the one order an
+Edit may not state, and it is `0004` applied to deriving, where reading a
+deletion and an addition as one note moved is the judgement. It was named
+under #83, when the inverse of applying an Edit Set was first asked for.
 
 *Refuse rather than answer plausibly* in `CHARTER.md` is argued from more often
 than any file here, and it is not here because it changes no code on its own:
