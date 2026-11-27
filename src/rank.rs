@@ -23,7 +23,7 @@
 use crate::error::Result;
 use crate::note::{Note, NoteId};
 use crate::take::Take;
-use midly::{MidiMessage, TrackEventKind};
+use midly::{num::u7, MidiMessage, TrackEventKind};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -206,12 +206,37 @@ pub(crate) fn ranked_pair(
         .then_some(mine.pair)
 }
 
-/// An event's position among identical messages at one track and Tick.
+/// An event's occurrence at one track, Tick and address.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RankedEvent {
     pub(crate) channel: u8,
     pub(crate) message: MidiMessage,
     occurrence: usize,
+}
+
+/// A value change keeps the participant's address in a ranked relation.
+/// Strike occurrence is counted by pitch, as note identity is (ADR-0002).
+fn participant_address(message: MidiMessage) -> MidiMessage {
+    match message {
+        MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => MidiMessage::NoteOn {
+            key,
+            vel: u7::new(1),
+        },
+        MidiMessage::NoteOn { key, .. } | MidiMessage::NoteOff { key, .. } => {
+            MidiMessage::NoteOff {
+                key,
+                vel: u7::new(0),
+            }
+        }
+        MidiMessage::ProgramChange { .. } => MidiMessage::ProgramChange {
+            program: u7::new(0),
+        },
+        MidiMessage::Controller { controller, .. } => MidiMessage::Controller {
+            controller,
+            value: u7::new(0),
+        },
+        _ => message,
+    }
 }
 
 type Departure = (RankedEvent, RankedEvent);
@@ -233,6 +258,7 @@ pub(crate) fn departures(
             continue;
         };
         let channel = channel.as_int();
+        let message = participant_address(message);
         let occurrence = occurrences.entry((channel, message)).or_insert(0);
         let current = RankedEvent {
             channel,

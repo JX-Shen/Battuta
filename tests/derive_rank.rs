@@ -183,3 +183,52 @@ fn swapping_tempo_statements_changes_the_final_tempo() {
         json!([{"kind": "tempo", "track": 0, "tick": 0}])
     );
 }
+
+#[test]
+fn changing_velocity_keeps_a_carried_program_order() {
+    use common::{build_state_tracks, event_stream, program_change, release};
+    use midly::{
+        num::{u4, u7},
+        MidiMessage::NoteOn,
+        TrackEventKind,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let with_velocity = |velocity| {
+        vec![
+            (
+                0,
+                TrackEventKind::Midi {
+                    channel: u4::new(0),
+                    message: NoteOn {
+                        key: u7::new(60),
+                        vel: u7::new(velocity),
+                    },
+                },
+            ),
+            program_change(0, 40),
+            release(10, 60),
+        ]
+    };
+    let a = build_state_tracks(&dir.path().join("a.mid"), &[with_velocity(40)]);
+    let b = build_state_tracks(&dir.path().join("b.mid"), &[with_velocity(60)]);
+    let edits = dir.path().join("derived.json");
+    let replay = dir.path().join("replay.mid");
+
+    derive(&a, &b, &edits).success();
+    assert_eq!(
+        read_edits(&edits),
+        json!({"edits": [
+            {"kind": "set_velocity", "id": "t0:c0:p60:s0:n0", "velocity": 60}
+        ]}),
+    );
+    mid()
+        .arg("apply")
+        .arg(&a)
+        .arg(&edits)
+        .arg("-o")
+        .arg(&replay)
+        .assert()
+        .success();
+    assert_eq!(event_stream(&replay), event_stream(&b));
+}
