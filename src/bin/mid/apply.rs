@@ -57,7 +57,8 @@ use std::path::PathBuf;
 /// statement in place, or inserts one immediately before the first strike of
 /// any channel. With no strike it inserts at the end of the Tick. Inserting
 /// beyond the track's End-of-Track advances it to the new statement's Tick.
-/// Later tempo statements are kept as written.
+/// Later tempo statements are kept as written. Restoring a prior value must
+/// pass the same value-range and cross-track tempo conflict checks.
 ///
 /// `delete_tempo` names the last tempo statement by Rank at a track and Tick
 /// in the input Take. An address with no original statement is refused, as is

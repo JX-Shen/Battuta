@@ -429,24 +429,19 @@ fn account(
             Edit::DeleteNote { id } => {
                 account.deleted.insert(note(id));
             }
-            Edit::SetTempo { .. } | Edit::DeleteTempo { .. } => {
+            rejected => {
+                let take = take.described_path();
+                let kind = match rejected {
+                    Edit::SetTempo { .. } => "set_tempo",
+                    Edit::DeleteTempo { .. } => "delete_tempo",
+                    _ => return Err(Error::EditOutsideCombination { side, take, edit }),
+                };
                 return Err(Error::TempoEditOutsideCombination {
                     side,
-                    take: take.described_path(),
+                    take,
                     edit,
-                    kind: if matches!(asked, Edit::SetTempo { .. }) {
-                        "set_tempo"
-                    } else {
-                        "delete_tempo"
-                    },
+                    kind,
                 });
-            }
-            _ => {
-                return Err(Error::EditOutsideCombination {
-                    side,
-                    take: take.described_path(),
-                    edit,
-                })
             }
         }
     }

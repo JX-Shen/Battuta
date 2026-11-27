@@ -177,20 +177,23 @@ fn combine_refuses_an_alternative_by_its_tempo_edit_kind() {
     let empty = dir.path().join("empty.json");
     let combined = dir.path().join("combined.mid");
     write_edits(&empty, vec![]);
-    for (index, edit) in [set_tempo(0, 0, 625_003), delete_tempo(0, 0)]
-        .into_iter()
-        .enumerate()
-    {
-        let alternative = dir.path().join(format!("alternative-{index}.mid"));
-        let kind = edit["kind"].as_str().expect("edit kind").to_owned();
-        apply(&input, vec![edit], &alternative).success();
+    let set_track = [(0, tempo(625_003)), (960, END)];
+    let deleted_track = [(960, END)];
+    for (kind, edit, track) in [
+        ("set_tempo", set_tempo(0, 0, 625_003), set_track.as_slice()),
+        ("delete_tempo", delete_tempo(0, 0), deleted_track.as_slice()),
+    ] {
+        let alternative = dir.path().join(format!("{kind}.mid"));
+        let edits = alternative.with_extension("json");
+        write_take(&alternative, &[track, &[(960, END)]]);
+        write_edits(&edits, vec![edit]);
 
         mid()
             .arg("combine")
             .arg(&input)
             .arg("--side")
             .arg(&alternative)
-            .arg(alternative.with_extension("json"))
+            .arg(edits)
             .arg("--side")
             .arg(&input)
             .arg(&empty)

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Everything `battuta` can fail at. One variant per condition a caller could
 /// reasonably want to tell apart — the messages are the product surface, so
@@ -532,24 +532,14 @@ pub enum Error {
     )]
     SourceEvidenceMismatch { side: usize, take: PathBuf },
 
-    #[error(
-        "side {side} ({take}): Edit {edit} of its Edit Set, counted from 0, is of a kind \
-         combine does not take up in this release; `mid combine --help` names the kinds it does. \
-         Nothing has been written. Leave that Edit out of the Alternative and apply it to the \
-         combined Take afterwards."
-    )]
+    #[error("{}", edit_outside_combination(*side, take, *edit, None))]
     EditOutsideCombination {
         side: usize,
         take: PathBuf,
         edit: usize,
     },
 
-    #[error(
-        "side {side} ({take}): Edit {edit} of its Edit Set, counted from 0, is `{kind}`, a kind \
-         combine does not take up in this release; `mid combine --help` names the kinds it does. \
-         Nothing has been written. Leave that Edit out of the Alternative and apply it to the \
-         combined Take afterwards."
-    )]
+    #[error("{}", edit_outside_combination(*side, take, *edit, Some(*kind)))]
     TempoEditOutsideCombination {
         side: usize,
         take: PathBuf,
@@ -644,6 +634,20 @@ pub enum Error {
          attribute and nothing has been written to {0}."
     )]
     RenderNotWav(PathBuf),
+}
+
+fn edit_outside_combination(side: usize, take: &Path, edit: usize, kind: Option<&str>) -> String {
+    let kind = match kind {
+        Some(kind) => format!("is `{kind}`, a kind"),
+        None => String::from("is of a kind"),
+    };
+    format!(
+        "side {side} ({}): Edit {edit} of its Edit Set, counted from 0, {kind} \
+         combine does not take up in this release; `mid combine --help` names the kinds it does. \
+         Nothing has been written. Leave that Edit out of the Alternative and apply it to the \
+         combined Take afterwards.",
+        take.display(),
+    )
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
