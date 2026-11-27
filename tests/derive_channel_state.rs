@@ -110,3 +110,47 @@ fn shadowed_controller_program_deletion_and_channel_mode_are_named_on_refusal() 
     );
     assert!(!output.exists());
 }
+
+#[test]
+fn a_new_unranked_site_does_not_blame_an_independent_controller_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("derived.json");
+    let notes = vec![strike(0, 60), release(5, 60)];
+    let before = build_state_tracks(
+        &dir.path().join("before.mid"),
+        &[
+            vec![control_change(10, 11, 10), control_change(10, 11, 20)],
+            notes.clone(),
+        ],
+    );
+    let after = build_state_tracks(
+        &dir.path().join("after.mid"),
+        &[
+            vec![
+                program_change(0, 40),
+                control_change(10, 11, 15),
+                control_change(10, 11, 20),
+                control_change(10, 7, 80),
+            ],
+            notes,
+        ],
+    );
+
+    let command = mid()
+        .arg("derive")
+        .args([&before, &after])
+        .arg("--json")
+        .arg("-o")
+        .arg(&output)
+        .assert()
+        .failure();
+    let report: Value = serde_json::from_slice(&command.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "controller", "track": 0, "tick": 10},
+            {"kind": "unranked", "track": 0, "tick": 0}
+        ])
+    );
+    assert!(!output.exists());
+}

@@ -127,16 +127,24 @@ fn derive_at_same_coordinates(
     let (replay, origins) = match apply_traced(before, &edit_set, &[]) {
         Ok(replay) => replay,
         Err(source) => {
-            differences.extend(event_differences(input, target, |_, _, _, kind| {
-                !matches!(
-                    event_address(kind).0,
-                    UnreachableKind::Note
-                        | UnreachableKind::TrackEnd
-                        | UnreachableKind::Uncompared(Uncompared::ReleaseVelocity)
-                )
-            }));
+            // The apply error identifies the blocker. At other addresses only
+            // differences without a planned Edit are known to be unreachable.
+            let planned = planned_state_addresses(&edit_set.edits);
+            differences.extend(event_differences(
+                input,
+                target,
+                |_, track, _, tick, event| {
+                    let address = event_address(event);
+                    !matches!(
+                        address.0,
+                        UnreachableKind::Note
+                            | UnreachableKind::TrackEnd
+                            | UnreachableKind::Uncompared(Uncompared::ReleaseVelocity)
+                    ) && !planned.contains(&(track, tick, address))
+                },
+            ));
             differences.extend(blocked.differences);
-            if let Some(difference) = blocked_note(&source, &after_notes) {
+            if let Some(difference) = replay_blocker(&source, &after_notes) {
                 if !differences.contains(&difference) {
                     differences.push(difference);
                 }
@@ -150,14 +158,15 @@ fn derive_at_same_coordinates(
         }
     };
     let re_read = replay.smf()?;
-    let mut replay_differences = event_differences(&re_read, target, |source, track, index, _| {
-        if source {
-            origins[track][index]
-                .is_none_or(|original| !blocked.source.contains(&(track, original)))
-        } else {
-            !blocked.target.contains(&(track, index))
-        }
-    });
+    let mut replay_differences =
+        event_differences(&re_read, target, |source, track, index, _, _| {
+            if source {
+                origins[track][index]
+                    .is_none_or(|original| !blocked.source.contains(&(track, original)))
+            } else {
+                !blocked.target.contains(&(track, index))
+            }
+        });
     replay_differences.retain(|difference| {
         difference.kind != UnreachableKind::EventOrder || !differences.contains(difference)
     });
@@ -340,7 +349,7 @@ fn tempos_on_track<'a>(events: &'a [TrackEvent<'_>]) -> impl Iterator<Item = (u3
     })
 }
 
-fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> {
+fn replay_blocker(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> {
     let (kind, track, tick) = match error {
         Error::NotesIndistinguishable { track, second, .. } => {
             (UnreachableKind::Note, *track, *second)
@@ -358,6 +367,7 @@ fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> 
         | Error::ControllerUnrankedAgainstReset { stating, tick, .. } => {
             (UnreachableKind::Unranked, *stating, *tick)
         }
+        Error::TemposUnranked { track, tick, .. } => (UnreachableKind::Unranked, *track, *tick),
         _ => return None,
     };
     Some(UnreachableDifference::at(kind, track, tick))
@@ -579,6 +589,51 @@ fn set_channel_state(track: usize, tick: u32, statement: Statement, value: u8) -
 }
 
 type ChannelAddress = (usize, u32, Statement);
+type EventAddress = (UnreachableKind, u8, u8);
+
+fn planned_state_addresses(edits: &[Edit]) -> BTreeSet<(usize, u32, EventAddress)> {
+    edits
+        .iter()
+        .filter_map(|edit| {
+            let (track, tick, kind, channel, parameter) = match *edit {
+                Edit::SetController {
+                    track,
+                    tick,
+                    channel,
+                    controller,
+                    ..
+                }
+                | Edit::DeleteController {
+                    track,
+                    tick,
+                    channel,
+                    controller,
+                } => (
+                    track,
+                    tick,
+                    UnreachableKind::Controller,
+                    channel,
+                    controller,
+                ),
+                Edit::SetProgram {
+                    track,
+                    tick,
+                    channel,
+                    ..
+                } => (track, tick, UnreachableKind::Program, channel, 0),
+                Edit::SetTempo { track, tick, .. } | Edit::DeleteTempo { track, tick } => {
+                    (track, tick, UnreachableKind::Tempo, 0, 0)
+                }
+                _ => return None,
+            };
+            Some((
+                track as usize,
+                tick as u32,
+                (kind, channel as u8, parameter as u8),
+            ))
+        })
+        .collect()
+}
 
 /// Read new counter-rule pairs and repairs of existing pairs independently
 /// of apply: an authored Edit Set can also land a new counter-rule pair (#91).
@@ -589,7 +644,7 @@ fn rank_changes(
     let mut corrections = BTreeSet::new();
     let mut refusals = Vec::new();
     for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
-        for (tick, (before, after)) in event_sites(before, after, |_, _, _| true) {
+        for (tick, (before, after)) in event_sites(before, after, |_, _, _, _| true) {
             if before == after {
                 continue;
             }
@@ -671,16 +726,16 @@ type EventSites<'a> = BTreeMap<u32, (Vec<TrackEventKind<'a>>, Vec<TrackEventKind
 fn event_sites<'a>(
     before: &[TrackEvent<'a>],
     after: &[TrackEvent<'a>],
-    include: impl Fn(bool, usize, TrackEventKind<'_>) -> bool,
+    include: impl Fn(bool, usize, u32, TrackEventKind<'_>) -> bool,
 ) -> EventSites<'a> {
     let mut sites = EventSites::new();
     for (index, (tick, event)) in events_at_ticks(before).enumerate() {
-        if include(true, index, event) {
+        if include(true, index, tick, event) {
             sites.entry(tick).or_default().0.push(event);
         }
     }
     for (index, (tick, event)) in events_at_ticks(after).enumerate() {
-        if include(false, index, event) {
+        if include(false, index, tick, event) {
             sites.entry(tick).or_default().1.push(event);
         }
     }
@@ -692,12 +747,12 @@ fn event_sites<'a>(
 fn event_differences(
     before: &Smf<'_>,
     after: &Smf<'_>,
-    include: impl Fn(bool, usize, usize, TrackEventKind<'_>) -> bool,
+    include: impl Fn(bool, usize, usize, u32, TrackEventKind<'_>) -> bool,
 ) -> Vec<UnreachableDifference> {
     let mut differences = Vec::new();
     for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
-        for (tick, (before, after)) in event_sites(before, after, |source, index, event| {
-            include(source, track, index, event)
+        for (tick, (before, after)) in event_sites(before, after, |source, index, tick, event| {
+            include(source, track, index, tick, event)
         }) {
             if before == after {
                 continue;
@@ -850,7 +905,7 @@ fn common_events<'a>(
 }
 
 /// Group a removed and an added value at the same address as one difference.
-fn event_address(event: TrackEventKind<'_>) -> (UnreachableKind, u8, u8) {
+fn event_address(event: TrackEventKind<'_>) -> EventAddress {
     if let Some(kind) = uncompared(&event) {
         let kind = match kind {
             Uncompared::EndOfTrack => UnreachableKind::TrackEnd,
