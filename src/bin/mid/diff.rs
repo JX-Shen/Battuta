@@ -204,7 +204,7 @@ pub fn run(args: Args) -> battuta::Result<()> {
     // Stderr, so that `--json` on stdout stays one JSON document and a pipeline
     // redirecting the payload cannot drop the disclosure with it. The same
     // reasoning as the Rig disclosure; see ADR-0005.
-    eprintln!("tolerance: {} ticks", diff.tolerance_ticks);
+    eprintln!("{}", crate::wording::tolerance(diff.tolerance_ticks));
 
     if args.json {
         println!("{}", crate::json(&diff));

@@ -14,14 +14,11 @@ pub struct Rescaling {
 }
 
 /// Why an event cannot be written at the requested PPQ.
-#[derive(Debug, Clone, Copy, thiserror::Error, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PpqTickRefusal {
-    #[error("its Tick is not divisible by the factor")]
     OffGrid,
-    #[error("the resulting Tick exceeds the range of a Tick")]
     TickOverflow,
-    #[error("the resulting gap exceeds the range of a MIDI delta")]
     DeltaOverflow,
 }
 
@@ -41,6 +38,11 @@ pub(super) fn rescale(before: Timing, target: &mut Smf<'_>) -> Result<Option<Res
         return Err(Error::DeriveInexactPpq {
             before_ppq,
             after_ppq,
+            difference: UnreachableDifference {
+                kind: UnreachableKind::Ppq,
+                track: None,
+                tick: None,
+            },
         });
     }
 

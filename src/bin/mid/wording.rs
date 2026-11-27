@@ -1356,6 +1356,49 @@ pub fn rendered(rendering: &battuta::Rendering) -> String {
     )
 }
 
+pub fn tolerance(ticks: u32) -> String {
+    format!("tolerance: {ticks} ticks")
+}
+
+pub fn rescaling(scaling: battuta::derive::Rescaling) -> String {
+    format!(
+        "rescaled target from {} PPQ to {} PPQ (factor {})",
+        scaling.after_ppq, scaling.before_ppq, scaling.factor
+    )
+}
+
+pub fn error(error: &battuta::Error) -> String {
+    use battuta::derive::PpqTickRefusal;
+    use battuta::Error;
+
+    match error {
+        Error::DeriveInexactPpq {
+            before_ppq,
+            after_ppq,
+            ..
+        } => format!(
+            "mid: cannot rescale the target from {after_ppq} PPQ to {before_ppq} PPQ: \
+             one PPQ must be a positive integer multiple of the other"
+        ),
+        Error::DerivePpqTick {
+            rescaling, reason, ..
+        } => {
+            let reason = match reason {
+                PpqTickRefusal::OffGrid => "its Tick is not divisible by the factor",
+                PpqTickRefusal::TickOverflow => "the resulting Tick exceeds the range of a Tick",
+                PpqTickRefusal::DeltaOverflow => {
+                    "the resulting gap exceeds the range of a MIDI delta"
+                }
+            };
+            format!(
+                "mid: cannot rescale the target from {} PPQ to {} PPQ by factor {}: {reason}",
+                rescaling.after_ppq, rescaling.before_ppq, rescaling.factor
+            )
+        }
+        _ => format!("mid: {error}"),
+    }
+}
+
 pub fn unreachable_difference(difference: &battuta::derive::UnreachableDifference) -> String {
     use battuta::derive::UnreachableKind;
     let kind = match difference.kind {
@@ -1367,7 +1410,7 @@ pub fn unreachable_difference(difference: &battuta::derive::UnreachableDifferenc
         UnreachableKind::Controller => "Controller",
         UnreachableKind::Program => "Program",
         UnreachableKind::Tempo => "tempo",
-        UnreachableKind::PitchBend => "pitch bend",
+        UnreachableKind::Bend => "Bend",
         UnreachableKind::EventOrder => "event order",
         UnreachableKind::Unranked => "order across tracks",
         UnreachableKind::Uncompared(kind) => uncompared(kind),

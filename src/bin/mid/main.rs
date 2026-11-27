@@ -76,7 +76,7 @@ fn main() {
     };
 
     if let Err(error) = result {
-        eprintln!("mid: {error}");
+        eprintln!("{}", wording::error(&error));
         std::process::exit(1);
     }
 }

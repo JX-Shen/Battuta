@@ -49,7 +49,7 @@ pub enum UnreachableKind {
     Controller,
     Program,
     Tempo,
-    PitchBend,
+    Bend,
     EventOrder,
     Unranked,
     #[serde(untagged)]
@@ -61,6 +61,7 @@ pub enum UnreachableKind {
 pub struct Derived {
     pub edit_set: EditSet,
     pub rescaling: Option<Rescaling>,
+    pub tolerance_ticks: u32,
 }
 
 /// Derive a verified Edit Set from the note identities in two Takes. A
@@ -95,6 +96,7 @@ pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<Deriv
     result.map(|edit_set| Derived {
         edit_set,
         rescaling,
+        tolerance_ticks,
     })
 }
 
@@ -780,7 +782,7 @@ fn channel_order_differences<'a>(
                 UnreachableKind::Controller
                     | UnreachableKind::Program
                     | UnreachableKind::Tempo
-                    | UnreachableKind::PitchBend
+                    | UnreachableKind::Bend
             ) {
                 addresses.entry(address).or_default().push(event);
             }
@@ -870,7 +872,7 @@ fn event_address(event: TrackEventKind<'_>) -> (UnreachableKind, u8, u8) {
                     (UnreachableKind::Controller, controller.as_int())
                 }
                 MidiMessage::ProgramChange { .. } => (UnreachableKind::Program, 0),
-                MidiMessage::PitchBend { .. } => (UnreachableKind::PitchBend, 0),
+                MidiMessage::PitchBend { .. } => (UnreachableKind::Bend, 0),
                 MidiMessage::Aftertouch { .. } | MidiMessage::ChannelAftertouch { .. } => {
                     unreachable!("uncompared classifies aftertouch")
                 }
@@ -882,19 +884,46 @@ fn event_address(event: TrackEventKind<'_>) -> (UnreachableKind, u8, u8) {
     }
 }
 
+/// The file derivation's outcome and the coordinate settings it reports.
+#[derive(Debug)]
+pub struct DerivationReport {
+    pub tolerance_ticks: u32,
+    pub rescaling: Option<Rescaling>,
+    pub result: Result<()>,
+}
+
 /// Open both Takes read-only and write the verified account to a different file.
 pub fn derive_to_edit_set(
     before: &Path,
     after: &Path,
     output: &Path,
     tolerance_ticks: u32,
-) -> Result<Option<Rescaling>> {
-    if same_file(before, output) || same_file(after, output) {
-        return Err(Error::DeriveWriteInPlace(output.to_path_buf()));
+) -> DerivationReport {
+    let mut rescaling = None;
+    let mut tolerance_used = tolerance_ticks;
+    let result = (|| {
+        if same_file(before, output) || same_file(after, output) {
+            return Err(Error::DeriveWriteInPlace(output.to_path_buf()));
+        }
+        let derived = match derive(&Take::read(before)?, &Take::read(after)?, tolerance_ticks) {
+            Err(Error::DeriveAfterRescaling {
+                rescaling: applied,
+                source,
+            }) => {
+                rescaling = Some(applied);
+                return Err(*source);
+            }
+            result => result?,
+        };
+        rescaling = derived.rescaling;
+        tolerance_used = derived.tolerance_ticks;
+        let mut bytes = serde_json::to_vec_pretty(&derived.edit_set).expect("Edit Sets serialise");
+        bytes.push(b'\n');
+        write_atomically(output, &bytes)
+    })();
+    DerivationReport {
+        tolerance_ticks: tolerance_used,
+        rescaling,
+        result,
     }
-    let derived = derive(&Take::read(before)?, &Take::read(after)?, tolerance_ticks)?;
-    let mut bytes = serde_json::to_vec_pretty(&derived.edit_set).expect("Edit Sets serialise");
-    bytes.push(b'\n');
-    write_atomically(output, &bytes)?;
-    Ok(derived.rescaling)
 }
