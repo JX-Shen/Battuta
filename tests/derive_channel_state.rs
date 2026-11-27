@@ -154,3 +154,51 @@ fn a_new_unranked_site_does_not_blame_an_independent_controller_edit() {
     );
     assert!(!output.exists());
 }
+
+#[test]
+fn derive_reports_each_conflicting_controller_at_the_same_tick_track_and_channel() {
+    let statements = |volume, expression| {
+        vec![
+            control_change(35, 7, volume),
+            control_change(35, 11, expression),
+        ]
+    };
+    let other = statements(40, 50);
+    assert_two_controller_conflicts(&[vec![], other.clone()], &[statements(60, 70), other]);
+}
+
+#[test]
+fn derive_reports_every_controller_against_a_strike_once() {
+    let statements = vec![control_change(35, 7, 60), control_change(35, 11, 70)];
+    let target = [statements.clone(), vec![strike(35, 60), release(65, 60)]];
+    for before in [[statements, vec![]], [vec![], vec![]]] {
+        assert_two_controller_conflicts(&before, &target);
+    }
+}
+
+fn assert_two_controller_conflicts(
+    before: &[Vec<(u32, midly::TrackEventKind<'static>)>],
+    after: &[Vec<(u32, midly::TrackEventKind<'static>)>],
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let before = build_state_tracks(&dir.path().join("before.mid"), before);
+    let after = build_state_tracks(&dir.path().join("after.mid"), after);
+    let output = dir.path().join("refused.json");
+    let refusal = mid()
+        .arg("derive")
+        .args([before, after])
+        .arg("-o")
+        .arg(&output)
+        .arg("--json")
+        .assert()
+        .code(1);
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "unranked", "track": 0, "tick": 35},
+            {"kind": "unranked", "track": 0, "tick": 35},
+        ])
+    );
+    assert!(!output.exists());
+}

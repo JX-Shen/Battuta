@@ -15,7 +15,7 @@ use crate::track::{stated_by, valued, ChannelState, Statement};
 use crate::uncompared::{uncompared, Uncompared};
 use midly::{MetaMessage, MidiMessage, Smf, TrackEvent, TrackEventKind};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 /// A difference the Edit Set could not reproduce. Header-level differences
@@ -385,17 +385,16 @@ fn replay_refusal(
 ) -> Error {
     let mut source = None;
     let mut locations = Vec::new();
-    let mut unranked_sites = BTreeSet::new();
+    let mut channel_conflicts = HashSet::new();
     for error in conflicts {
+        // State and strike checks can find the same conflict from both ends
+        // (#83). Distinct relations can share the same reported location.
+        if channel_conflict(&error).is_some_and(|conflict| !channel_conflicts.insert(conflict)) {
+            continue;
+        }
         let location = replay_blocker(&error, notes);
         if let Some((difference, channel)) = location {
-            // State and strike checks can find the same Unranked site
-            // from both ends. A site includes its channel (#83).
-            if difference.kind != UnreachableKind::Unranked
-                || unranked_sites.insert((difference.tick, difference.track, channel))
-            {
-                locations.push((difference.tick, difference.track, channel, difference));
-            }
+            locations.push((difference.tick, difference.track, channel, difference));
         }
         if source.is_none()
             && (location.is_none()
@@ -424,6 +423,52 @@ fn replay_refusal(
         },
         None => Error::DeriveUnreachable { differences },
     }
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct ChannelConflict {
+    kind: std::mem::Discriminant<Error>,
+    stating: usize,
+    other_track: usize,
+    tick: u32,
+    channel: u8,
+    state: String,
+}
+
+fn channel_conflict(error: &Error) -> Option<ChannelConflict> {
+    let (&stating, &other_track, &tick, &channel, state) = match error {
+        Error::StateUnrankedAgainstNotes {
+            stating,
+            sounding: other_track,
+            tick,
+            channel,
+            state,
+        }
+        | Error::StatesUnrankedAgainstEachOther {
+            stating,
+            stated: other_track,
+            tick,
+            channel,
+            state,
+            ..
+        }
+        | Error::ControllerUnrankedAgainstReset {
+            stating,
+            stated: other_track,
+            tick,
+            channel,
+            state,
+        } => (stating, other_track, tick, channel, state),
+        _ => return None,
+    };
+    Some(ChannelConflict {
+        kind: std::mem::discriminant(error),
+        stating,
+        other_track,
+        tick,
+        channel,
+        state: state.clone(),
+    })
 }
 
 fn replay_blocker(error: &Error, notes: &[Note]) -> Option<(UnreachableDifference, Option<u8>)> {

@@ -837,9 +837,9 @@ fn stay_rankable(
             else {
                 continue;
             };
-            if let Some(other) = candidates
+            for other in candidates
                 .iter()
-                .find(|candidate| candidate.value != own.value)
+                .filter(|candidate| candidate.value != own.value)
             {
                 if own.value.is_none() || other.value.is_none() {
                     conflict(Error::ControllerUnrankedAgainstReset {
@@ -895,34 +895,27 @@ fn stay_rankable(
         // addressed from, whichever end the Edit Set moved.
         for note in track.struck_notes().filter(|note| note.written) {
             for (other, elsewhere) in tracks.iter().enumerate() {
-                if other == stating {
+                if other == stating || named(other, note.channel, note.tick) {
                     continue;
                 }
-                let state = final_statements[other]
-                    .iter()
-                    .find(|state| {
-                        state.tick == note.tick && state.statement.channel == note.channel
+                let mut report = |state| {
+                    conflict(Error::StateUnrankedAgainstNotes {
+                        stating: other,
+                        sounding: stating,
+                        tick: note.tick,
+                        channel: note.channel,
+                        state,
                     })
-                    .map(|state| state.statement.state.named())
-                    .or_else(|| {
-                        // A note can land on a carried Bend without editing it — #42.
-                        elsewhere
-                            .states_bend_at(note.channel, note.tick)
-                            .then(|| "bend".to_string())
-                    });
-                let Some(state) = state else {
-                    continue;
                 };
-                if named(other, note.channel, note.tick) {
-                    continue;
+                for state in final_statements[other].iter().filter(|state| {
+                    state.tick == note.tick && state.statement.channel == note.channel
+                }) {
+                    report(state.statement.state.named())?;
                 }
-                conflict(Error::StateUnrankedAgainstNotes {
-                    stating: other,
-                    sounding: stating,
-                    tick: note.tick,
-                    channel: note.channel,
-                    state,
-                })?;
+                // A note can land on a carried Bend without editing it (#42).
+                if elsewhere.states_bend_at(note.channel, note.tick) {
+                    report("bend".to_string())?;
+                }
             }
         }
     }
