@@ -604,6 +604,41 @@ fn reads_one_exact_statement_inside_a_conductor_track_accelerando() {
 }
 
 #[test]
+fn reads_the_schubert_tempo_before_at_and_after_the_broadening() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let original = "fixtures/external/vienna4x22-schubert-d783-15.mid";
+    let edited = dir.path().join("schubert-broadened.mid");
+    let edits = common::edit_set(
+        dir.path(),
+        "broaden",
+        r#"{"kind":"set_tempo","track":0,"tick":97010,"micros_per_quarter":625000},
+           {"kind":"set_tempo","track":0,"tick":105010,"micros_per_quarter":500000}"#,
+    );
+    mid()
+        .args(["apply", original])
+        .arg(edits)
+        .arg("-o")
+        .arg(&edited)
+        .assert()
+        .success();
+
+    for (tick, stated_from, micros) in [
+        (97_009, 0, 500_000),
+        (97_010, 97_010, 625_000),
+        (105_010, 105_010, 500_000),
+    ] {
+        let reading = tempo_at(&edited, tick);
+        assert_eq!(reading["tick"], tick);
+        assert_eq!(reading["kind"], "determinate", "tick {tick}");
+        assert_eq!(reading["stated_from"], stated_from, "tick {tick}");
+        assert_eq!(
+            reading["value"]["micros_per_quarter"], micros,
+            "tick {tick}"
+        );
+    }
+}
+
+#[test]
 fn rejects_an_invalid_tempo_query_tick_before_printing_a_report() {
     for tick in ["--at=-1", "--at=bar-2", "--at=4294967296"] {
         mid()
