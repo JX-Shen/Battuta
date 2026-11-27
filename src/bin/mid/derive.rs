@@ -8,7 +8,9 @@ use std::path::PathBuf;
 /// exactly one End-of-Track event, as its last event. A note present in
 /// both Takes by identity keeps that identity. Differences in its velocity
 /// or duration are expressed by changes to those fields. A note present in
-/// just one Take is expressed as a deletion or addition. Other differences
+/// just one Take is expressed as a deletion or addition by default. With a
+/// positive tolerance, pairing such notes as moves is a judgement based on
+/// their start Ticks. Other differences
 /// that the Edit Set cannot reproduce are listed by kind, track and Tick.
 ///
 /// Before writing, the Edit Set is applied and the resulting Take is
@@ -29,15 +31,28 @@ pub struct Args {
     #[arg(short = 'o', long = "output")]
     output: PathBuf,
 
+    /// Maximum distance between start Ticks for pairing as a move. 0 switches off pairing.
+    #[arg(long = "tolerance", value_name = "TICKS", default_value_t = 0)]
+    tolerance_ticks: u32,
+
     /// State the result and any refusal as JSON on stdout.
     #[arg(long)]
     json: bool,
 }
 
 pub fn run(args: Args) -> battuta::Result<()> {
-    let result = battuta::derive::derive_to_edit_set(&args.before, &args.after, &args.output);
+    let result = battuta::derive::derive_to_edit_set(
+        &args.before,
+        &args.after,
+        &args.output,
+        args.tolerance_ticks,
+    );
+    eprintln!("tolerance: {} ticks", args.tolerance_ticks);
     match &result {
-        Ok(()) if args.json => println!("{}", crate::json(&json!({ "output": args.output }))),
+        Ok(()) if args.json => println!(
+            "{}",
+            crate::json(&json!({ "output": args.output, "tolerance_ticks": args.tolerance_ticks }))
+        ),
         Ok(()) => println!("{}", args.output.display()),
         Err(Error::DeriveInvalidTrackEnds { differences })
         | Err(Error::DeriveUnreachable { differences })
@@ -47,7 +62,7 @@ pub fn run(args: Args) -> battuta::Result<()> {
                 eprintln!("{}", crate::wording::unreachable_difference(difference));
             }
             if args.json {
-                print_refusal(differences);
+                print_refusal(differences, args.tolerance_ticks);
             }
         }
         Err(_) => {}
@@ -55,9 +70,11 @@ pub fn run(args: Args) -> battuta::Result<()> {
     result
 }
 
-fn print_refusal(differences: &[UnreachableDifference]) {
+fn print_refusal(differences: &[UnreachableDifference], tolerance_ticks: u32) {
     println!(
         "{}",
-        crate::json(&json!({ "output": null, "refusal": differences }))
+        crate::json(
+            &json!({ "output": null, "refusal": differences, "tolerance_ticks": tolerance_ticks })
+        )
     );
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -62,6 +63,80 @@ pub struct Note {
     /// events or neither — without pairing the track a second time.
     #[serde(skip)]
     pub(crate) off_event: usize,
+}
+
+/// Match notes first by identity, then by the stated Tick tolerance (#6, #10, #89).
+///
+/// Returns the target index for each source note and which target notes were taken.
+pub(crate) fn match_notes(
+    before_notes: &[Note],
+    after_notes: &[Note],
+    tolerance_ticks: u32,
+) -> (Vec<Option<usize>>, Vec<bool>) {
+    // Which after-note each before-note was matched with, by position in
+    // `after_notes`, and the other way round. Positions rather than identities:
+    // the second pass matches notes whose identities differ, so an identity is
+    // not a key it can use.
+    let mut matched_to: Vec<Option<usize>> = vec![None; before_notes.len()];
+    let mut taken: Vec<bool> = vec![false; after_notes.len()];
+
+    let after_by_id: HashMap<&NoteId, usize> = after_notes
+        .iter()
+        .enumerate()
+        .map(|(index, note)| (&note.id, index))
+        .collect();
+    for (index, note) in before_notes.iter().enumerate() {
+        if let Some(&found) = after_by_id.get(&note.id) {
+            matched_to[index] = Some(found);
+            taken[found] = true;
+        }
+    }
+
+    // A tolerance of nought asks for the first pass alone, and the bound cannot
+    // deliver that by itself: a note replaced at its own Tick is nought Ticks
+    // away, so the filter below admits it however tight the tolerance is, and
+    // pitch reaches the comparison only as a tie-break. Not running the pass is
+    // therefore the whole of the difference between matching by identity and
+    // matching by nearness — #29.
+    if tolerance_ticks > 0 {
+        // Greedy, in the order `Take::notes` fixes — track order, then note-on
+        // order — because greedy makes that order observable: two unmatched
+        // notes the same distance from a candidate produce different pairings
+        // depending on which is reached first. The order is part of `notes`'
+        // contract, so the answer is the same on every run rather than whatever
+        // iteration happened to do.
+        for (index, note) in before_notes.iter().enumerate() {
+            if matched_to[index].is_some() {
+                continue;
+            }
+            let nearest = after_notes
+                .iter()
+                .enumerate()
+                .filter(|&(candidate, other)| {
+                    !taken[candidate]
+                        && other.track == note.track
+                        && other.channel == note.channel
+                        && other.start.abs_diff(note.start) <= tolerance_ticks
+                })
+                // Nearest in Ticks, which is what the tolerance bounds. Pitch
+                // breaks a tie because a transposed note sits at the same Tick
+                // as whatever else did not move, and the after Take's own order
+                // breaks the rest.
+                .min_by_key(|&(candidate, other)| {
+                    (
+                        other.start.abs_diff(note.start),
+                        other.pitch.abs_diff(note.pitch),
+                        candidate,
+                    )
+                })
+                .map(|(candidate, _)| candidate);
+            if let Some(candidate) = nearest {
+                matched_to[index] = Some(candidate);
+                taken[candidate] = true;
+            }
+        }
+    }
+    (matched_to, taken)
 }
 
 /// A pitch under the two conventions a MIDI file does not carry: which letter

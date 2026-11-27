@@ -3,7 +3,7 @@
 
 use crate::edit::{apply, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
-use crate::note::Note;
+use crate::note::{match_notes, Note};
 use crate::take::{write_atomically, Take};
 use crate::uncompared::{uncompared, Uncompared};
 use midly::{MetaMessage, MidiMessage, Smf, TrackEvent, TrackEventKind};
@@ -51,7 +51,7 @@ pub enum UnreachableKind {
 
 /// Derive a verified Edit Set from the note identities in two Takes. A
 /// refusal names the differences the normal form could not reproduce.
-pub fn derive(before: &Take, after: &Take) -> Result<EditSet> {
+pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<EditSet> {
     let input = before.smf()?;
     let target = after.smf()?;
     let mut track_ends: Vec<_> = [&input, &target]
@@ -75,7 +75,7 @@ pub fn derive(before: &Take, after: &Take) -> Result<EditSet> {
     let before_notes = before.notes()?;
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
-    derive_notes(&before_notes, &after_notes, &mut edits);
+    derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
 
     let edit_set = EditSet { edits };
     let replay = match apply(before, &edit_set) {
@@ -235,43 +235,68 @@ fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> 
     Some(UnreachableDifference::at(kind, track, tick))
 }
 
-fn derive_notes(before: &[Note], after: &[Note], edits: &mut Vec<Edit>) {
-    let mine: HashMap<_, _> = before.iter().map(|note| (&note.id, note)).collect();
-    let theirs: HashMap<_, _> = after.iter().map(|note| (&note.id, note)).collect();
-
-    // Scan each Take in track and strike order. In particular, additions at
-    // one Tick arrive in the order the target states them (ADR-0002, #86).
-    for note in before {
-        let Some(target) = theirs.get(&note.id) else {
-            edits.push(Edit::DeleteNote {
+fn derive_notes(before: &[Note], after: &[Note], tolerance_ticks: u32, edits: &mut Vec<Edit>) {
+    let (matched, taken) = match_notes(before, after, tolerance_ticks);
+    let mut moved_from = vec![None; after.len()];
+    for (note, target) in before.iter().zip(matched) {
+        match target {
+            None => edits.push(Edit::DeleteNote {
                 id: note.id.clone(),
-            });
-            continue;
-        };
-        if target.velocity != note.velocity {
-            edits.push(Edit::SetVelocity {
-                id: note.id.clone(),
-                velocity: i64::from(target.velocity),
-            });
-        }
-        if target.duration != note.duration {
-            edits.push(Edit::ResizeNote {
-                id: note.id.clone(),
-                delta_ticks: i64::from(target.duration) - i64::from(note.duration),
-            });
+            }),
+            Some(index) if after[index].id == note.id => {
+                change_note(note, &after[index], false, edits);
+            }
+            Some(index) => moved_from[index] = Some(note),
         }
     }
 
-    for note in after.iter().filter(|note| !mine.contains_key(&note.id)) {
-        edits.push(Edit::AddNote {
-            track: note.track as i64,
-            channel: i64::from(note.channel),
-            pitch: i64::from(note.pitch),
-            start: i64::from(note.start),
-            duration: i64::from(note.duration),
-            velocity: i64::from(note.velocity),
+    // Moves and additions arrive in target strike order, which decides the
+    // occurrence indices of notes that land at the same address (ADR-0002).
+    for (index, note) in after.iter().enumerate() {
+        if let Some(source) = moved_from[index] {
+            change_note(source, note, true, edits);
+        } else if !taken[index] {
+            edits.push(Edit::AddNote {
+                track: note.track as i64,
+                channel: i64::from(note.channel),
+                pitch: i64::from(note.pitch),
+                start: i64::from(note.start),
+                duration: i64::from(note.duration),
+                velocity: i64::from(note.velocity),
+            });
+        }
+    }
+}
+
+fn change_note(note: &Note, target: &Note, moved: bool, edits: &mut Vec<Edit>) {
+    let mut resize = (note.duration != target.duration).then(|| Edit::ResizeNote {
+        id: note.id.clone(),
+        delta_ticks: i64::from(target.duration) - i64::from(note.duration),
+    });
+    // Resize first when moving the old duration would exceed the Tick range.
+    let resize_first = moved && target.start.checked_add(note.duration).is_none();
+    if resize_first {
+        edits.extend(resize.take());
+    }
+    if moved {
+        edits.push(Edit::MoveNote {
+            id: note.id.clone(),
+            delta_ticks: i64::from(target.start) - i64::from(note.start),
+        });
+        if note.pitch != target.pitch {
+            edits.push(Edit::TransposeNote {
+                id: note.id.clone(),
+                semitones: i64::from(target.pitch) - i64::from(note.pitch),
+            });
+        }
+    }
+    if target.velocity != note.velocity {
+        edits.push(Edit::SetVelocity {
+            id: note.id.clone(),
+            velocity: i64::from(target.velocity),
         });
     }
+    edits.extend(resize);
 }
 
 /// Compare re-read events by absolute Tick: a note Edit changes its
@@ -404,11 +429,16 @@ fn event_address(event: TrackEventKind<'_>) -> (UnreachableKind, u8, u8) {
 }
 
 /// Open both Takes read-only and write the verified account to a different file.
-pub fn derive_to_edit_set(before: &Path, after: &Path, output: &Path) -> Result<()> {
+pub fn derive_to_edit_set(
+    before: &Path,
+    after: &Path,
+    output: &Path,
+    tolerance_ticks: u32,
+) -> Result<()> {
     if same_file(before, output) || same_file(after, output) {
         return Err(Error::DeriveWriteInPlace(output.to_path_buf()));
     }
-    let edits = derive(&Take::read(before)?, &Take::read(after)?)?;
+    let edits = derive(&Take::read(before)?, &Take::read(after)?, tolerance_ticks)?;
     let mut bytes = serde_json::to_vec_pretty(&edits).expect("Edit Sets serialise");
     bytes.push(b'\n');
     write_atomically(output, &bytes)
