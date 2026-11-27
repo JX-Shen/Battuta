@@ -66,6 +66,11 @@ pub fn derive(before: &Take, after: &Take) -> Result<EditSet> {
         });
     }
     let mut differences = structural_differences(&input, &target);
+    let reordered = reordered_tracks(&input.tracks, &target.tracks);
+    if !reordered.is_empty() {
+        differences.extend(reordered);
+        return Err(unreachable(differences));
+    }
     let mut edits = Vec::new();
     let before_notes = before.notes()?;
     let mut after_notes = after.notes()?;
@@ -167,6 +172,40 @@ fn structural_differences(before: &Smf<'_>, after: &Smf<'_>) -> Vec<UnreachableD
         });
     }
     differences
+}
+
+/// A whole-track permutation changes coordinates, even if erasing and
+/// rebuilding the note contents at those track numbers would replay it (#83).
+fn reordered_tracks<'a>(
+    before: &[Vec<TrackEvent<'a>>],
+    after: &[Vec<TrackEvent<'a>>],
+) -> Vec<UnreachableDifference> {
+    if before.len() != after.len() || before == after {
+        return Vec::new();
+    }
+    let mut occurrences = HashMap::<&[TrackEvent<'a>], usize>::new();
+    for track in before {
+        *occurrences.entry(track).or_default() += 1;
+    }
+    for track in after {
+        let Some(remaining) = occurrences.remove(track.as_slice()) else {
+            return Vec::new();
+        };
+        if remaining > 1 {
+            occurrences.insert(track, remaining - 1);
+        }
+    }
+    before
+        .iter()
+        .zip(after)
+        .enumerate()
+        .filter(|(_, (before, after))| before != after)
+        .map(|(track, _)| UnreachableDifference {
+            kind: UnreachableKind::TrackStructure,
+            track: Some(track),
+            tick: None,
+        })
+        .collect()
 }
 
 fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> {
