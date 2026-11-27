@@ -877,10 +877,12 @@ fn reset_controllers(events: &[TrackEventKind<'_>]) -> BTreeSet<Statement> {
             ChannelState::Controller(RESET_ALL_CONTROLLERS) => {
                 resets.insert(statement.channel);
             }
-            ChannelState::Controller(number) if number < FIRST_CHANNEL_MODE => {
-                if seen.insert(statement) && resets.contains(&statement.channel) {
-                    cleared.insert(statement);
-                }
+            ChannelState::Controller(number)
+                if number < FIRST_CHANNEL_MODE
+                    && seen.insert(statement)
+                    && resets.contains(&statement.channel) =>
+            {
+                cleared.insert(statement);
             }
             _ => {}
         }
