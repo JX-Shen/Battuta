@@ -429,6 +429,16 @@ pub(crate) fn apply_traced(
     edit_set: &EditSet,
     allowed: &[Site],
 ) -> Result<(Take, Origins)> {
+    apply_checked(take, edit_set, allowed, &mut Err)
+}
+
+/// Construct a candidate once, visiting checks in ordinary apply's order (#83).
+pub(crate) fn apply_checked(
+    take: &Take,
+    edit_set: &EditSet,
+    allowed: &[Site],
+    conflict: &mut impl FnMut(Error) -> Result<()>,
+) -> Result<(Take, Origins)> {
     let notes = take.notes()?;
     let mut smf = take.smf()?;
     // Every track is opened before the first Edit lands, and every Edit reaches
@@ -478,10 +488,10 @@ pub(crate) fn apply_traced(
             }
         }
     }
-    let expected = stay_distinct(&tracks, &sounding)?;
-    stay_rankable(&tracks, allowed)?;
+    let expected = stay_distinct(&tracks, &sounding, conflict)?;
+    stay_rankable(&tracks, allowed, conflict)?;
     for (number, track) in tracks.iter().enumerate() {
-        track.stay_placed(number)?;
+        track.stay_placed(number, conflict)?;
     }
 
     let mut origins = Vec::with_capacity(tracks.len());
@@ -495,7 +505,7 @@ pub(crate) fn apply_traced(
         .collect::<Result<_>>()?;
     let result = Take::from_smf(&smf)?;
     if tempos_edited {
-        tempos_stay_rankable(take, &result)?;
+        tempos_stay_rankable(take, &result, conflict)?;
     }
     // Read every release in the finished Take, including carried releases
     // that ended no note in the input (#77).
@@ -505,15 +515,14 @@ pub(crate) fn apply_traced(
         .map(|note| (note.id, note.start + note.duration))
         .collect();
     for (id, expected) in expected {
-        let actual = found
-            .get(&id)
-            .ok_or_else(|| Error::NoteEventsLost(id.to_string()))?;
-        if *actual != expected {
-            return Err(Error::NoteReleaseChanged {
+        match found.get(&id) {
+            None => conflict(Error::NoteEventsLost(id.to_string()))?,
+            Some(&actual) if actual != expected => conflict(Error::NoteReleaseChanged {
                 id: id.to_string(),
                 expected,
-                actual: *actual,
-            });
+                actual,
+            })?,
+            _ => {}
         }
     }
     Ok((result, origins))
@@ -521,18 +530,22 @@ pub(crate) fn apply_traced(
 
 /// Compare candidate statements at their original Ticks, using the same
 /// reduction as inspection. An unchanged conflicting pair may be carried (#82).
-fn tempos_stay_rankable(before: &Take, after: &Take) -> Result<()> {
-    let conflicts = after.unranked_tempos(None)?;
-    if conflicts.is_empty() {
+fn tempos_stay_rankable(
+    before: &Take,
+    after: &Take,
+    conflict: &mut impl FnMut(Error) -> Result<()>,
+) -> Result<()> {
+    let spans = after.unranked_tempos(None)?;
+    if spans.is_empty() {
         return Ok(());
     }
     let carried = before.unranked_tempos(None)?;
-    for conflict in conflicts {
+    for span in spans {
         let previous = carried
-            .binary_search_by_key(&conflict.from, |span| span.from)
+            .binary_search_by_key(&span.from, |previous| previous.from)
             .ok()
             .map_or(&[][..], |index| carried[index].candidates.as_slice());
-        for changed in &conflict.candidates {
+        for changed in &span.candidates {
             let value = changed.value.micros_per_quarter;
             if previous
                 .binary_search_by_key(&changed.track, |candidate| candidate.track)
@@ -540,18 +553,20 @@ fn tempos_stay_rankable(before: &Take, after: &Take) -> Result<()> {
             {
                 continue;
             }
-            let other = conflict
+            let other = span
                 .candidates
                 .iter()
                 .find(|candidate| candidate.value.micros_per_quarter != value)
                 .expect("a conflict has differing values");
-            return Err(Error::TemposUnranked {
-                tick: conflict.from,
+            conflict(Error::TemposUnranked {
+                tick: span.from,
                 track: changed.track,
                 value,
                 other_track: other.track,
                 other_value: other.value.micros_per_quarter,
-            });
+            })?;
+            // The clock is global. These candidates describe one conflicting Tick.
+            break;
         }
     }
     Ok(())
@@ -599,7 +614,11 @@ struct Sounding {
 /// Notes no Edit touched cannot reach this. They kept the slots they were paired
 /// in, and pairing produced them in finishing order to begin with — so anything
 /// caught here is something an Edit did.
-fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<Vec<(NoteId, u32)>> {
+fn stay_distinct(
+    tracks: &[Rewrite],
+    sounding: &[NoteSlots],
+    conflict: &mut impl FnMut(Error) -> Result<()>,
+) -> Result<Vec<(NoteId, u32)>> {
     let mut grouped: BTreeMap<Addressed, Vec<Sounding>> = BTreeMap::new();
     for note in sounding {
         let track = &tracks[note.track];
@@ -628,17 +647,28 @@ fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<Vec<(Note
         // Struck in this order, they have to be released in it too: a reader
         // hands the first release to the earliest note still sounding, so one
         // that began first and ends last would be handed the shorter length.
+        let mut inverted = false;
         for pair in notes.windows(2) {
             if pair[0].released > pair[1].released {
-                return Err(Error::NotesIndistinguishable {
+                conflict(Error::NotesIndistinguishable {
                     track: addressed.track,
                     channel: addressed.channel,
                     pitch: addressed.pitch,
                     first: pair[0].strike.0,
                     second: pair[1].strike.0,
-                });
+                })?;
+                inverted = true;
             }
         }
+        // After reporting inversions, compare the release sequence a FIFO
+        // reader should find. Otherwise the same inversion would also be
+        // reported as two mismatches and obscure independent carried releases.
+        let mut releases = Vec::new();
+        if inverted {
+            releases.extend(notes.iter().map(|note| note.released));
+            releases.sort_unstable();
+        }
+        let mut releases = releases.into_iter();
         let mut previous = None;
         let mut occurrence = 0;
         for note in notes {
@@ -656,7 +686,7 @@ fn stay_distinct(tracks: &[Rewrite], sounding: &[NoteSlots]) -> Result<Vec<(Note
                     note.strike.0,
                     occurrence,
                 ),
-                note.released,
+                releases.next().unwrap_or(note.released),
             ));
         }
     }
@@ -725,7 +755,11 @@ impl std::str::FromStr for Site {
 /// State/strike checks concern written events; continuing-value checks concern
 /// affected addresses, including a move or deletion's source (#78). Unrelated
 /// carried sites remain the author's (ADR-0003); inspection reports them. See #26.
-fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
+fn stay_rankable(
+    tracks: &[Rewrite],
+    allowed: &[Site],
+    conflict: &mut impl FnMut(Error) -> Result<()>,
+) -> Result<()> {
     let named = |track: usize, channel: u8, tick: u32| {
         allowed.contains(&Site {
             track,
@@ -808,15 +842,16 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                 .find(|candidate| candidate.value != own.value)
             {
                 if own.value.is_none() || other.value.is_none() {
-                    return Err(Error::ControllerUnrankedAgainstReset {
+                    conflict(Error::ControllerUnrankedAgainstReset {
                         stating,
                         stated: other.track,
                         tick,
                         channel: statement.channel,
                         state: statement.state.named(),
-                    });
+                    })?;
+                    continue;
                 }
-                return Err(Error::StatesUnrankedAgainstEachOther {
+                conflict(Error::StatesUnrankedAgainstEachOther {
                     stating,
                     stated: other.track,
                     tick,
@@ -824,7 +859,7 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                     state: statement.state.named(),
                     asked: own.value.expect("a numeric statement"),
                     carried: other.value.expect("a numeric statement"),
-                });
+                })?;
             }
         }
         for state in final_statements[stating]
@@ -843,13 +878,13 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                     .struck_notes()
                     .any(|note| note.tick == state.tick && note.channel == statement.channel)
                 {
-                    return Err(Error::StateUnrankedAgainstNotes {
+                    conflict(Error::StateUnrankedAgainstNotes {
                         stating,
                         sounding: other,
                         tick: state.tick,
                         channel: statement.channel,
                         state: statement.state.named(),
-                    });
+                    })?;
                 }
             }
         }
@@ -881,13 +916,13 @@ fn stay_rankable(tracks: &[Rewrite], allowed: &[Site]) -> Result<()> {
                 if named(other, note.channel, note.tick) {
                     continue;
                 }
-                return Err(Error::StateUnrankedAgainstNotes {
+                conflict(Error::StateUnrankedAgainstNotes {
                     stating: other,
                     sounding: stating,
                     tick: note.tick,
                     channel: note.channel,
                     state,
-                });
+                })?;
             }
         }
     }

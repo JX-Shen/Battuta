@@ -114,3 +114,48 @@ fn moving_the_only_tempo_between_otherwise_identical_tracks_is_reachable() {
         ],
     );
 }
+
+#[test]
+fn derive_reports_every_tempo_conflict_alongside_a_channel_conflict() {
+    use common::{program_change, release, strike};
+
+    let dir = tempfile::tempdir().unwrap();
+    let conductor = vec![tempo(60, 500_000), tempo(180, 480_000)];
+    let notes = vec![strike(120, 60), release(150, 60)];
+    let before = build_state_tracks(
+        &dir.path().join("before.mid"),
+        &[conductor.clone(), vec![], notes.clone()],
+    );
+    let after = build_state_tracks(
+        &dir.path().join("after.mid"),
+        &[
+            conductor,
+            vec![
+                tempo(60, 600_000),
+                program_change(120, 40),
+                tempo(180, 550_000),
+            ],
+            notes,
+        ],
+    );
+    let output = dir.path().join("derived.json");
+
+    let refusal = mid()
+        .arg("derive")
+        .args([&before, &after])
+        .arg("-o")
+        .arg(&output)
+        .arg("--json")
+        .assert()
+        .code(1);
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "unranked", "track": 0, "tick": 60},
+            {"kind": "unranked", "track": 1, "tick": 120},
+            {"kind": "unranked", "track": 0, "tick": 180},
+        ])
+    );
+    assert!(!output.exists());
+}

@@ -270,3 +270,97 @@ fn changing_velocity_keeps_a_carried_program_order() {
         .success();
     assert_eq!(event_stream(&replay), event_stream(&b));
 }
+
+#[test]
+fn derive_reports_both_independent_unranked_ticks_in_tick_order() {
+    use common::{build_state_tracks, program_change, release, strike};
+
+    let dir = tempfile::tempdir().unwrap();
+    let a = build_state_tracks(&dir.path().join("a.mid"), &[vec![], vec![], vec![]]);
+    let b = build_state_tracks(
+        &dir.path().join("b.mid"),
+        &[
+            vec![program_change(120, 40)],
+            vec![program_change(0, 50)],
+            vec![
+                strike(0, 60),
+                release(60, 60),
+                strike(120, 62),
+                release(180, 62),
+            ],
+        ],
+    );
+    let edits = dir.path().join("derived.json");
+    std::fs::write(&edits, "existing output").unwrap();
+
+    let refusal = derive(&a, &b, &edits).code(1);
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "unranked", "track": 1, "tick": 0},
+            {"kind": "unranked", "track": 0, "tick": 120},
+        ])
+    );
+    assert_eq!(std::fs::read_to_string(edits).unwrap(), "existing output");
+}
+
+#[test]
+fn derive_reports_release_velocity_and_conflicts_on_two_channels_at_one_tick() {
+    use common::{build_state_tracks, program_change, release, strike};
+    use midly::{
+        num::{u4, u7},
+        MidiMessage, TrackEventKind,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let a = build_state_tracks(&dir.path().join("a.mid"), &[vec![], vec![], vec![]]);
+    let channel_one = |(tick, event)| {
+        let TrackEventKind::Midi { message, .. } = event else {
+            unreachable!("this fixture supplies a MIDI message");
+        };
+        (
+            tick,
+            TrackEventKind::Midi {
+                channel: u4::new(1),
+                message,
+            },
+        )
+    };
+    let release_with_velocity = TrackEventKind::Midi {
+        channel: u4::new(0),
+        message: MidiMessage::NoteOff {
+            key: u7::new(65),
+            vel: u7::new(70),
+        },
+    };
+    let b = build_state_tracks(
+        &dir.path().join("b.mid"),
+        &[
+            vec![
+                program_change(120, 40),
+                channel_one(program_change(120, 42)),
+            ],
+            vec![
+                strike(120, 60),
+                channel_one(strike(120, 62)),
+                release(180, 60),
+                channel_one(release(180, 62)),
+            ],
+            vec![strike(10, 65), (30, release_with_velocity)],
+        ],
+    );
+    let output = dir.path().join("derived.json");
+
+    let refusal = derive(&a, &b, &output).code(1);
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "release_velocity", "track": 2, "tick": 30},
+            {"kind": "unranked", "track": 0, "tick": 120},
+            {"kind": "unranked", "track": 0, "tick": 120},
+        ])
+    );
+    assert!(!output.exists());
+}

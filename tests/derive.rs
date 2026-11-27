@@ -331,3 +331,48 @@ fn invalid_track_ends_in_either_input_are_refused_before_replay() {
         assert!(!output.exists());
     }
 }
+
+#[test]
+fn derive_reports_independent_note_release_conflicts_found_on_reread() {
+    use common::{build_state_tracks, program_change, release, strike};
+
+    let dir = tempfile::tempdir().unwrap();
+    let before = build_state_tracks(
+        &dir.path().join("before.mid"),
+        &[vec![release(30, 60), release(90, 62)], vec![]],
+    );
+    let after = build_state_tracks(
+        &dir.path().join("after.mid"),
+        &[
+            vec![
+                strike(0, 60),
+                release(60, 60),
+                strike(80, 62),
+                release(100, 62),
+            ],
+            vec![program_change(0, 40)],
+        ],
+    );
+    let output = dir.path().join("refused.json");
+
+    let refusal = mid()
+        .arg("derive")
+        .args([&before, &after])
+        .arg("-o")
+        .arg(&output)
+        .arg("--json")
+        .assert()
+        .code(1);
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "release_velocity", "track": 0, "tick": 30},
+            {"kind": "release_velocity", "track": 0, "tick": 90},
+            {"kind": "unranked", "track": 1, "tick": 0},
+            {"kind": "note", "track": 0, "tick": 60},
+            {"kind": "note", "track": 0, "tick": 100},
+        ])
+    );
+    assert!(!output.exists());
+}

@@ -1909,3 +1909,44 @@ fn relative_edits_keep_valid_model_boundaries() {
         assert_eq!(std::fs::read(&input).unwrap(), before);
     }
 }
+
+#[test]
+fn apply_still_reports_the_first_construction_conflict_in_traversal_order() {
+    use common::build_state_tracks;
+
+    let dir = tempfile::tempdir().unwrap();
+    let take = build_state_tracks(&dir.path().join("base.mid"), &[vec![], vec![], vec![]]);
+    let edits = edit_set(
+        dir.path(),
+        "unranked",
+        r#"
+            {"kind":"set_program","track":0,"tick":120,"channel":0,"program":40},
+            {"kind":"set_program","track":1,"tick":0,"channel":0,"program":50},
+            {"kind":"add_note","track":2,"start":0,"duration":60,"channel":0,"pitch":60,"velocity":64},
+            {"kind":"add_note","track":2,"start":120,"duration":60,"channel":0,"pitch":62,"velocity":64}
+        "#,
+    );
+    let output = dir.path().join("refused.mid");
+    let failure = mid()
+        .arg("apply")
+        .args([&take, &edits])
+        .arg("-o")
+        .arg(&output)
+        .assert()
+        .code(1);
+    let first_conflict = concat!(
+        "mid: at tick 120, this Edit Set leaves a program change for channel 0 on track 0, ",
+        "while track 2 strikes that channel at the same tick. A Rank orders events within one ",
+        "track; these are on two, and the file states no order between them, so which one a ",
+        "synthesiser meets first is not something your Take says. Those notes would sound under ",
+        "either state depending on the player. Nothing has been written.\n\n",
+        "State it on track 2, which carries those notes, or at a tick where channel 0 strikes ",
+        "nothing. For a note Edit, move the strike to a tick without this cross-track statement. ",
+        "If you know what you are doing here, name the site: --allow-unranked t0:c0:s120\n",
+    );
+    assert_eq!(
+        std::str::from_utf8(&failure.get_output().stderr).unwrap(),
+        first_conflict
+    );
+    assert!(!output.exists());
+}

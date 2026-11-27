@@ -636,19 +636,26 @@ impl<'a> Rewrite<'a> {
     /// with a wrong one. Asking the event is the second opinion: a release is a
     /// release whatever an Edit called it, and an Edit that moved one without
     /// placing it at all named no `Placement` to be checked against.
-    pub(crate) fn stay_placed(&self, track: usize) -> Result<()> {
+    pub(crate) fn stay_placed(
+        &self,
+        track: usize,
+        conflict: &mut impl FnMut(Error) -> Result<()>,
+    ) -> Result<()> {
         for (index, slot) in self.slots.iter().enumerate() {
             let Some(written) = slot.written.filter(|_| slot.alive) else {
                 continue;
             };
             if released(&slot.kind).is_some() {
-                self.release_precedes_its_own_strike(track, index, slot)?;
+                self.release_precedes_its_own_strike(track, index, slot)
+                    .or_else(&mut *conflict)?;
             }
             if let Some(statement) = stated_by(&slot.kind) {
-                self.state_precedes_the_strikes_it_governs(track, index, slot, statement)?;
+                self.state_precedes_the_strikes_it_governs(track, index, slot, statement)
+                    .or_else(&mut *conflict)?;
                 self.states_keep_the_order_they_were_written_in(
                     track, index, slot, statement, written,
-                )?;
+                )
+                .or_else(&mut *conflict)?;
             }
             // A strike is asserted nothing about. It is placed behind everything
             // at its Tick, and both of the other rules place things in front of
@@ -1079,7 +1086,7 @@ mod tests {
         let mut track = Rewrite::of(&events);
         track.set_tick(1, 0);
         let refused = track
-            .stay_placed(0)
+            .stay_placed(0, &mut Err)
             .expect_err("a release behind its own strike silences it");
         assert!(
             matches!(refused, Error::ReleaseBehindItsStrike { .. }),
@@ -1098,7 +1105,7 @@ mod tests {
         let mut track = Rewrite::of(&events);
         track.push(0, control(64, 127), Placement::Strike);
         let refused = track
-            .stay_placed(0)
+            .stay_placed(0, &mut Err)
             .expect_err("a state behind the notes it governs does not reach them");
         assert!(
             matches!(refused, Error::StateBehindItsStrikes { .. }),
@@ -1117,7 +1124,7 @@ mod tests {
         let second = track.push(0, control(101, 1), holding(101));
         track.slots[second].rank = track.slots[first].rank - 1;
         let refused = track
-            .stay_placed(0)
+            .stay_placed(0, &mut Err)
             .expect_err("two statements reversed leave the wrong one in force");
         assert!(
             matches!(refused, Error::StatesOutOfOrder { .. }),
@@ -1134,7 +1141,7 @@ mod tests {
         let events = vec![event(0, strike(60)), event(0, release(60))];
         let track = Rewrite::of(&events);
         track
-            .stay_placed(0)
+            .stay_placed(0, &mut Err)
             .expect("carried-in order is the author's, whatever it is");
     }
 }

@@ -6,7 +6,7 @@ mod ppq;
 pub use ppq::{PpqTickRefusal, Rescaling};
 
 use crate::controller::{FIRST_CHANNEL_MODE, RESET_ALL_CONTROLLERS};
-use crate::edit::{apply_traced, same_file, Edit, EditSet};
+use crate::edit::{apply_checked, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
 use crate::note::{match_notes, Note};
 use crate::rank::departures;
@@ -117,18 +117,23 @@ fn derive_at_same_coordinates(
     let before_notes = before.notes()?;
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
-    let blocked = derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
+    let mut blocked = derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
     let (corrections, new_orders) = rank_changes(input, target);
     differences.extend(new_orders);
     derive_channel_state(input, target, &corrections, &mut edits);
     derive_tempos(input, target, &mut edits);
 
     let edit_set = EditSet { edits };
-    let (replay, origins) = match apply_traced(before, &edit_set, &[]) {
+    let mut conflicts = Vec::new();
+    let replay = apply_checked(before, &edit_set, &[], &mut |error| {
+        conflicts.push(error);
+        Ok(())
+    });
+    let (replay, origins) = match replay {
         Ok(replay) => replay,
         Err(source) => {
-            // The apply error identifies the blocker. At other addresses only
-            // differences without a planned Edit are known to be unreachable.
+            // Without a candidate, compare differences without a planned Edit
+            // directly between the input and the target.
             let planned = planned_state_addresses(&edit_set.edits);
             differences.extend(event_differences(
                 input,
@@ -144,19 +149,39 @@ fn derive_at_same_coordinates(
                 },
             ));
             differences.extend(blocked.differences);
-            if let Some(difference) = replay_blocker(&source, &after_notes) {
-                if !differences.contains(&difference) {
-                    differences.push(difference);
-                }
-                return Err(unreachable(differences));
-            }
-            differences.sort_unstable();
-            return Err(Error::DeriveReplayFailed {
+            return Err(replay_refusal(
                 differences,
-                source: Box::new(source),
-            });
+                conflicts.into_iter().chain([source]),
+                &after_notes,
+            ));
         }
     };
+
+    // A construction refusal can still leave a readable candidate. Compare
+    // its events for other differences, and avoid reporting the same failure
+    // again as a changed note pairing (#83).
+    for error in &conflicts {
+        match error {
+            Error::NotesIndistinguishable {
+                track,
+                channel,
+                pitch,
+                first,
+                second,
+            } => {
+                blocked.strikes.extend([
+                    (*track, *channel, *pitch, *first),
+                    (*track, *channel, *pitch, *second),
+                ]);
+            }
+            Error::NoteReleaseChanged { id, .. } | Error::NoteEventsLost(id) => {
+                if let Some(note) = after_notes.iter().find(|note| note.id.to_string() == *id) {
+                    blocked.strikes.insert(strike_address(note));
+                }
+            }
+            _ => {}
+        }
+    }
     let re_read = replay.smf()?;
     let mut replay_differences =
         event_differences(&re_read, target, |source, track, index, _, _| {
@@ -179,6 +204,10 @@ fn derive_at_same_coordinates(
         &blocked,
         &mut differences,
     )?;
+    if !conflicts.is_empty() {
+        differences.extend(blocked.differences);
+        return Err(replay_refusal(differences, conflicts, &after_notes));
+    }
     if differences.is_empty() && blocked.differences.is_empty() {
         return Ok(edit_set);
     }
@@ -349,28 +378,122 @@ fn tempos_on_track<'a>(events: &'a [TrackEvent<'_>]) -> impl Iterator<Item = (u3
     })
 }
 
-fn replay_blocker(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> {
-    let (kind, track, tick) = match error {
-        Error::NotesIndistinguishable { track, second, .. } => {
-            (UnreachableKind::Note, *track, *second)
+fn replay_refusal(
+    mut differences: Vec<UnreachableDifference>,
+    conflicts: impl IntoIterator<Item = Error>,
+    notes: &[Note],
+) -> Error {
+    let mut source = None;
+    let mut locations = Vec::new();
+    let mut unranked_sites = BTreeSet::new();
+    for error in conflicts {
+        let location = replay_blocker(&error, notes);
+        if let Some((difference, channel)) = location {
+            // State and strike checks can find the same Unranked site
+            // from both ends. A site includes its channel (#83).
+            if difference.kind != UnreachableKind::Unranked
+                || unranked_sites.insert((difference.tick, difference.track, channel))
+            {
+                locations.push((difference.tick, difference.track, channel, difference));
+            }
         }
+        if source.is_none()
+            && (location.is_none()
+                || matches!(
+                    error,
+                    Error::ReleaseBehindItsStrike { .. }
+                        | Error::StateBehindItsStrikes { .. }
+                        | Error::StatesOutOfOrder { .. }
+                        | Error::NoteEventsLost(_)
+                ))
+        {
+            source = Some(Box::new(error));
+        }
+    }
+    differences.sort_unstable();
+    locations.sort_unstable();
+    differences.extend(
+        locations
+            .into_iter()
+            .map(|(_, _, _, difference)| difference),
+    );
+    match source {
+        Some(source) => Error::DeriveReplayFailed {
+            differences,
+            source,
+        },
+        None => Error::DeriveUnreachable { differences },
+    }
+}
+
+fn replay_blocker(error: &Error, notes: &[Note]) -> Option<(UnreachableDifference, Option<u8>)> {
+    let (kind, track, tick, channel) = match error {
+        Error::NotesIndistinguishable {
+            track,
+            second,
+            channel,
+            ..
+        } => (UnreachableKind::Note, *track, *second, Some(*channel)),
         Error::ResizeOutOfRange { id, .. } | Error::NoteReleaseChanged { id, .. } => {
             let note = notes.iter().find(|note| note.id.to_string() == *id)?;
             (
                 UnreachableKind::Note,
                 note.track,
                 note.start + note.duration,
+                Some(note.channel),
             )
         }
-        Error::StateUnrankedAgainstNotes { stating, tick, .. }
-        | Error::StatesUnrankedAgainstEachOther { stating, tick, .. }
-        | Error::ControllerUnrankedAgainstReset { stating, tick, .. } => {
-            (UnreachableKind::Unranked, *stating, *tick)
+        Error::StateUnrankedAgainstNotes {
+            stating,
+            tick,
+            channel,
+            ..
         }
-        Error::TemposUnranked { track, tick, .. } => (UnreachableKind::Unranked, *track, *tick),
+        | Error::StatesUnrankedAgainstEachOther {
+            stating,
+            tick,
+            channel,
+            ..
+        }
+        | Error::ControllerUnrankedAgainstReset {
+            stating,
+            tick,
+            channel,
+            ..
+        } => (UnreachableKind::Unranked, *stating, *tick, Some(*channel)),
+        Error::TemposUnranked { track, tick, .. } => {
+            (UnreachableKind::Unranked, *track, *tick, None)
+        }
+        Error::ReleaseBehindItsStrike {
+            track,
+            tick,
+            channel,
+            ..
+        }
+        | Error::StateBehindItsStrikes {
+            track,
+            tick,
+            channel,
+            ..
+        }
+        | Error::StatesOutOfOrder {
+            track,
+            tick,
+            channel,
+            ..
+        } => (UnreachableKind::EventOrder, *track, *tick, Some(*channel)),
+        Error::NoteEventsLost(id) => {
+            let note = notes.iter().find(|note| note.id.to_string() == *id)?;
+            (
+                UnreachableKind::Note,
+                note.track,
+                note.start,
+                Some(note.channel),
+            )
+        }
         _ => return None,
     };
-    Some(UnreachableDifference::at(kind, track, tick))
+    Some((UnreachableDifference::at(kind, track, tick), channel))
 }
 
 #[derive(Default)]
