@@ -158,6 +158,23 @@ pianists, anonymised as p01–p22, each playing the same four excerpts.
 1531 Controller events, 1514 of them CC64 (damper) and 17 CC67 (soft pedal);
 316 notes; no bend.
 
-The only captured piano performance here, and the only Take here that states
-no time signature, so it is where a Take without Bars is met in the ordinary
-course rather than built for a test.
+A captured piano performance with no time signature, so it is where a Take
+without Bars is met in the ordinary course.
+
+## cpjku-vienna4x22-schubert-d783-15.mid
+
+The same p01 performance as `vienna4x22-schubert-d783-15.mid`, in the
+Institute of Computational Perception's edition of the Vienna 4x22 Piano
+Corpus. The 2024 update shifted note and pedal times to align with the audio.
+This edition uses 480 PPQ. #88 compares the two editions to exercise refusal
+when neither PPQ is an integer multiple of the other.
+
+- Source: [CPJKU edition, pinned MIDI](https://github.com/CPJKU/vienna4x22/blob/1033ade0899bfd03a89f370c9ad5d8443ddccd3e/midi/Schubert_D783_no15_p01.mid).
+  [Change notes](https://github.com/CPJKU/vienna4x22/blob/1033ade0899bfd03a89f370c9ad5d8443ddccd3e/CHANGES.md).
+- SHA-256: `9edbbcf32dc7d1bbd089b5af7fccdc16991baff69f4b616af7b70cc00331317f`
+- Licence: CC BY 4.0 for the original and the Institute's updates. Read 2026-11-28.
+  [CPJKU licence statement](https://github.com/CPJKU/vienna4x22/blob/1033ade0899bfd03a89f370c9ad5d8443ddccd3e/README.md#license).
+- Attribution: The Vienna 4x22 Piano Corpus, Werner Goebl, University of Music
+  and Performing Arts Vienna (mdw), <https://doi.org/10.21939/4X22>, with
+  updates by the Institute of Computational Perception. This fixture is an
+  unmodified copy of the CPJKU file.
