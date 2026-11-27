@@ -499,6 +499,15 @@ pub fn tempo_value(tempo: &battuta::Tempo) -> String {
     )
 }
 
+pub fn tempo_at(tempo: &battuta::take::TempoAt) -> String {
+    let value = state_reading(&Readings::none(), &tempo.reading, tempo_value, tempo_value);
+    let tick = tempo.tick;
+    match tempo.stated_from {
+        Some(from) => format!("tempo at tick {tick}: {value}, stated at tick {from}"),
+        None => format!("tempo at tick {tick}: {value}"),
+    }
+}
+
 pub fn indeterminate_span<T>(
     readings: &Readings,
     address: String,

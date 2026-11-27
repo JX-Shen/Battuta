@@ -482,3 +482,134 @@ length          11516 ticks (8 bars)
 "
     );
 }
+
+fn tempo_at(path: &std::path::Path, tick: u32) -> serde_json::Value {
+    let output = mid()
+        .args(["info", "--json", "--at", &tick.to_string()])
+        .arg(path)
+        .assert()
+        .success();
+    let info: serde_json::Value =
+        serde_json::from_slice(&output.get_output().stdout).expect("info --json is JSON");
+    info["tempo_at"].clone()
+}
+
+#[test]
+fn reads_tempo_at_a_tick_and_reports_the_statement_tick() {
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = common::build_state_tracks(
+        &dir.path().join("time.mid"),
+        &[vec![
+            common::tempo(240, 500_000),
+            common::tempo(480, 1_000_000),
+            common::tempo(480, 625_000),
+            common::tempo(960, 625_000),
+        ]],
+    );
+
+    assert_eq!(
+        tempo_at(&path, 239),
+        json!({"tick": 239, "kind": "unstated"})
+    );
+    for (tick, stated_from, micros, bpm) in [
+        (240, 240, 500_000, 120.0),
+        (479, 240, 500_000, 120.0),
+        (480, 480, 625_000, 96.0),
+        (700, 480, 625_000, 96.0),
+        (u32::MAX, 960, 625_000, 96.0),
+    ] {
+        assert_eq!(
+            tempo_at(&path, tick),
+            json!({
+                "tick": tick,
+                "stated_from": stated_from,
+                "kind": "determinate",
+                "value": {"micros_per_quarter": micros, "bpm": bpm}
+            })
+        );
+    }
+    mid()
+        .args(["info", "--at", "700"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "tempo at tick 700: 96 bpm (625000 us per quarter), stated at tick 480",
+        ));
+}
+
+#[test]
+fn reads_every_conflicting_track_and_reports_agreement_as_determinate() {
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = common::build_state_tracks(
+        &dir.path().join("two-tracks.mid"),
+        &[
+            vec![common::tempo(240, 500_000), common::tempo(480, 625_000)],
+            vec![common::tempo(240, 1_000_000), common::tempo(480, 625_000)],
+        ],
+    );
+
+    for tick in [240, 479] {
+        assert_eq!(
+            tempo_at(&path, tick),
+            json!({
+                "tick": tick, "stated_from": 240, "kind": "indeterminate",
+                "candidates": [
+                    {"track": 0, "track_names": [], "tick": 240,
+                     "value": {"micros_per_quarter": 500000, "bpm": 120.0}},
+                    {"track": 1, "track_names": [], "tick": 240,
+                     "value": {"micros_per_quarter": 1000000, "bpm": 60.0}}
+                ]
+            })
+        );
+    }
+    assert_eq!(
+        tempo_at(&path, 480),
+        json!({"tick": 480, "stated_from": 480, "kind": "determinate",
+               "value": {"micros_per_quarter": 625000, "bpm": 96.0}})
+    );
+
+    mid()
+        .args(["info", "--at", "479"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "tempo at tick 479: indeterminate (120 bpm (500000 us per quarter) from track 0 at tick 240; 60 bpm (1000000 us per quarter) from track 1 at tick 240)",
+        ));
+}
+
+#[test]
+fn reads_one_exact_statement_inside_a_conductor_track_accelerando() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = common::build_state_tracks(
+        &dir.path().join("accelerando.mid"),
+        &[
+            (0..40)
+                .map(|i| common::tempo(i * 40, 650_000 - 2_003 * i))
+                .collect(),
+            vec![common::strike(0, 60), common::release(1920, 60)],
+        ],
+    );
+
+    let reading = tempo_at(&path, 1_099);
+    assert_eq!(reading["tick"], 1_099);
+    assert_eq!(reading["kind"], "determinate");
+    assert_eq!(reading["stated_from"], 1_080);
+    assert_eq!(reading["value"]["micros_per_quarter"], 595_919);
+}
+
+#[test]
+fn rejects_an_invalid_tempo_query_tick_before_printing_a_report() {
+    for tick in ["--at=-1", "--at=bar-2", "--at=4294967296"] {
+        mid()
+            .args(["info", FIXTURE, "--json", tick])
+            .assert()
+            .code(2)
+            .stdout("");
+    }
+}

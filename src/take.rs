@@ -98,6 +98,17 @@ impl Tempo {
     }
 }
 
+/// The tempo in force at one requested Tick, with its source moment (#92).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TempoAt {
+    pub tick: u32,
+    /// The latest Tick stating a tempo, absent when the tempo is unstated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stated_from: Option<u32>,
+    #[serde(flatten)]
+    pub reading: Reading<Tempo>,
+}
+
 /// One place a Take states a tempo: which track says it, at which Tick, and
 /// what it says.
 ///
@@ -355,6 +366,23 @@ impl Take {
         // Stable event listing order; tempo_timeline reads continuing state — #42.
         found.sort_by_key(|found| found.tick);
         Ok(found)
+    }
+
+    /// Read the tempo in force at a Tick, including beyond the last event (#92).
+    pub fn tempo_at(&self, tick: u32) -> Result<TempoAt> {
+        let tempos = tempo_timeline(&self.stated_tempos()?);
+        let (stated_from, reading) = match tempos.moment_at(tick) {
+            Some((stated_from, reading)) => (
+                Some(*stated_from),
+                reading.clone().map(Tempo::from_micros_per_quarter),
+            ),
+            None => (None, Reading::Unstated),
+        };
+        Ok(TempoAt {
+            tick,
+            stated_from,
+            reading,
+        })
     }
 
     /// Continuing Tempo conflicts intersecting a window, including inherited ones — #42.

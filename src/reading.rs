@@ -182,12 +182,15 @@ impl<T: Copy + Eq> Timeline<T> {
         Self { moments }
     }
 
-    pub(crate) fn at(&self, tick: u32) -> Reading<T> {
+    /// The last stated moment at or before the requested Tick.
+    pub(crate) fn moment_at(&self, tick: u32) -> Option<&(u32, Reading<T>)> {
         let index = self.moments.partition_point(|(at, _)| *at <= tick);
-        index
-            .checked_sub(1)
-            .map(|index| self.moments[index].1.clone())
-            .unwrap_or(Reading::Unstated)
+        index.checked_sub(1).map(|index| &self.moments[index])
+    }
+
+    pub(crate) fn at(&self, tick: u32) -> Reading<T> {
+        self.moment_at(tick)
+            .map_or(Reading::Unstated, |(_, reading)| reading.clone())
     }
 
     /// How many times what is in force changes after it is first stated.

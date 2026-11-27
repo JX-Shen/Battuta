@@ -24,6 +24,16 @@ use std::path::PathBuf;
 /// earliest statement, null when there is none; `tempo_changes` and
 /// `time_signature_changes` count the changes after it. The length's Elapsed
 /// time is not in `--json`, which carries Ticks only.
+///
+/// `--at <TICK>` also reads the tempo in force at one Tick (0–4294967295).
+/// The last statement at or before that Tick is in force, including a
+/// statement exactly at it. Before the first statement the reading is
+/// unstated. The last tempo remains in force after the Take ends.
+/// An indeterminate reading lists the conflicting tracks and values.
+///
+/// In JSON, `tempo_at` has the same kind, value or candidates as `tempo`.
+/// It also carries the requested `tick` and the source `stated_from` Tick.
+/// `stated_from` is absent when the reading is unstated.
 #[derive(clap::Args)]
 #[command(verbatim_doc_comment)]
 pub struct Args {
@@ -33,14 +43,35 @@ pub struct Args {
     /// Emit structured output for an agent to consume.
     #[arg(long)]
     json: bool,
+
+    /// Read the tempo in force at this Tick.
+    #[arg(long, value_name = "TICK")]
+    at: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct InfoAt<'a> {
+    #[serde(flatten)]
+    info: &'a battuta::Info,
+    tempo_at: &'a battuta::take::TempoAt,
 }
 
 pub fn run(args: Args) -> battuta::Result<()> {
     let take = battuta::Take::read(&args.take)?;
     let info = take.info()?;
+    let tempo_at = args.at.map(|tick| take.tempo_at(tick)).transpose()?;
 
     if args.json {
-        println!("{}", crate::json(&info));
+        match &tempo_at {
+            Some(tempo_at) => println!(
+                "{}",
+                crate::json(&InfoAt {
+                    info: &info,
+                    tempo_at
+                })
+            ),
+            None => println!("{}", crate::json(&info)),
+        }
         return Ok(());
     }
 
@@ -89,6 +120,9 @@ pub fn run(args: Args) -> battuta::Result<()> {
             },
         ],
     ]);
+    if let Some(tempo_at) = tempo_at {
+        println!("{}", crate::wording::tempo_at(&tempo_at));
+    }
     Ok(())
 }
 
