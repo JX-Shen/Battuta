@@ -25,7 +25,7 @@ use crate::note::{Note, NoteId};
 use crate::take::Take;
 use midly::{MidiMessage, TrackEventKind};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 /// The MIDI controller number of the damper pedal.
@@ -48,6 +48,10 @@ pub enum RankedPairKind {
 }
 
 impl RankedPairKind {
+    fn governing_first(self) -> bool {
+        self == Self::ProgramBeforeStrike
+    }
+
     /// What to call this where it is reported. `mid` owns the English
     /// (ADR-0005); this is the fact's own name, which the two consumers share.
     pub fn named(self) -> &'static str {
@@ -202,6 +206,64 @@ pub(crate) fn ranked_pair(
         .then_some(mine.pair)
 }
 
+/// An event's position among identical messages at one track and Tick.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct RankedEvent {
+    pub(crate) channel: u8,
+    pub(crate) message: MidiMessage,
+    occurrence: usize,
+}
+
+type Departure = (RankedEvent, RankedEvent);
+
+/// Counter-rule relations, with the governing event first in each result.
+/// Count occurrences so carrying one duplicate does not license a new pair.
+pub(crate) fn departures(
+    events: &[TrackEventKind<'_>],
+) -> (HashSet<RankedEvent>, HashSet<Departure>) {
+    let mut occurrences = HashMap::new();
+    let mut earlier = HashMap::<_, Vec<_>>::new();
+    let mut departures = HashSet::new();
+    let mut ranked = HashSet::new();
+    for event in events {
+        let TrackEventKind::Midi { channel, message } = *event else {
+            continue;
+        };
+        let Some(role) = role(&message) else {
+            continue;
+        };
+        let channel = channel.as_int();
+        let occurrence = occurrences.entry((channel, message)).or_insert(0);
+        let current = RankedEvent {
+            channel,
+            message,
+            occurrence: *occurrence,
+        };
+        *occurrence += 1;
+        ranked.insert(current);
+
+        // The opposite half can only violate the rule if it precedes this
+        // event and the rule wants this half first.
+        if role.governing == role.pair.governing_first() {
+            if let Some(opposite) = earlier.get(&(channel, role.pair, !role.governing)) {
+                for &previous in opposite {
+                    let pair = if role.governing {
+                        (current, previous)
+                    } else {
+                        (previous, current)
+                    };
+                    departures.insert(pair);
+                }
+            }
+        }
+        earlier
+            .entry((channel, role.pair, role.governing))
+            .or_default()
+            .push(current);
+    }
+    (ranked, departures)
+}
+
 /// What one Take says about one pair at one Tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reading {
@@ -339,7 +401,7 @@ fn claims(take: &Take, notes: &[Note]) -> Result<Claims> {
     Ok(seen
         .into_iter()
         .filter_map(|(site, sightings)| {
-            let governing_first = site.2 == RankedPairKind::ProgramBeforeStrike;
+            let governing_first = site.2.governing_first();
             let reading = sightings.read(governing_first)?;
             let mut relations = BTreeMap::new();
             if reading != Reading::Unranked {

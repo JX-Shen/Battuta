@@ -9,12 +9,13 @@ use crate::controller::FIRST_CHANNEL_MODE;
 use crate::edit::{apply, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
 use crate::note::{match_notes, Note};
+use crate::rank::departures;
 use crate::take::{write_atomically, Take};
 use crate::track::{stated_by, valued, ChannelState, Statement};
 use crate::uncompared::{uncompared, Uncompared};
 use midly::{MetaMessage, MidiMessage, Smf, TrackEvent, TrackEventKind};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 /// A difference the Edit Set could not reproduce. Header-level differences
@@ -115,7 +116,9 @@ fn derive_at_same_coordinates(
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
     derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
-    derive_channel_state(input, target, &mut edits);
+    let (corrections, new_orders) = rank_changes(input, target);
+    differences.extend(new_orders);
+    derive_channel_state(input, target, &corrections, &mut edits);
     derive_tempos(input, target, &mut edits);
 
     let edit_set = EditSet { edits };
@@ -141,7 +144,13 @@ fn derive_at_same_coordinates(
             });
         }
     };
-    differences.extend(event_differences(&replay.smf()?, target, |_| true));
+    let re_read = replay.smf()?;
+    let mut replay_differences = event_differences(&re_read, target, |_| true);
+    replay_differences.retain(|difference| {
+        difference.kind != UnreachableKind::EventOrder || !differences.contains(difference)
+    });
+    differences.extend(replay_differences);
+    note_order_differences(&replay, &re_read, &after_notes, target, &mut differences)?;
     if differences.is_empty() {
         return Ok(edit_set);
     }
@@ -408,7 +417,12 @@ struct ChannelValues {
 }
 
 /// The statement in force is last at its address (#87).
-fn derive_channel_state(before: &Smf<'_>, after: &Smf<'_>, edits: &mut Vec<Edit>) {
+fn derive_channel_state(
+    before: &Smf<'_>,
+    after: &Smf<'_>,
+    corrections: &BTreeSet<ChannelAddress>,
+    edits: &mut Vec<Edit>,
+) {
     for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
         let mut addresses = BTreeMap::<_, ChannelValues>::new();
         for (tick, event) in events_at_ticks(before) {
@@ -438,7 +452,8 @@ fn derive_channel_state(before: &Smf<'_>, after: &Smf<'_>, edits: &mut Vec<Edit>
                     .iter()
                     .copied()
                     .eq(target_shadowed.iter().map(|&(_, value)| value))
-                    && before.last() != Some(&value)
+                    && (before.last() != Some(&value)
+                        || corrections.contains(&(track, tick, statement)))
                 {
                     sets.push((position, set_channel_state(track, tick, statement, value)));
                     continue;
@@ -498,6 +513,99 @@ fn set_channel_state(track: usize, tick: u32, statement: Statement, value: u8) -
     }
 }
 
+type ChannelAddress = (usize, u32, Statement);
+
+/// Read new counter-rule pairs and repairs of existing pairs independently
+/// of apply: an authored Edit Set can also land a new counter-rule pair (#91).
+fn rank_changes(
+    before: &Smf<'_>,
+    after: &Smf<'_>,
+) -> (BTreeSet<ChannelAddress>, Vec<UnreachableDifference>) {
+    let mut corrections = BTreeSet::new();
+    let mut refusals = Vec::new();
+    for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
+        for (tick, (before, after)) in event_sites(before, after, |_| true) {
+            if before == after {
+                continue;
+            }
+            let (_, old) = departures(&before);
+            let (target_events, new) = departures(&after);
+            if !new.is_subset(&old) {
+                refusals.push(UnreachableDifference::at(
+                    UnreachableKind::EventOrder,
+                    track,
+                    tick,
+                ));
+            }
+            for &(governing, governed) in old.difference(&new) {
+                if !target_events.contains(&governing) || !target_events.contains(&governed) {
+                    continue;
+                }
+                let event = TrackEventKind::Midi {
+                    channel: midly::num::u4::new(governing.channel),
+                    message: governing.message,
+                };
+                if let Some((statement, _)) = channel_statement(&event) {
+                    corrections.insert((track, tick, statement));
+                }
+            }
+        }
+    }
+    (corrections, refusals)
+}
+
+/// Even with equal event multisets, repeated notes can pair differently.
+fn note_order_differences(
+    replay: &Take,
+    replay_smf: &Smf<'_>,
+    target_notes: &[Note],
+    target_smf: &Smf<'_>,
+    differences: &mut Vec<UnreachableDifference>,
+) -> Result<()> {
+    let replay_notes = replay.notes()?;
+    let replay_by_id: HashMap<_, _> = replay_notes.iter().map(|note| (&note.id, note)).collect();
+    for target in target_notes {
+        let Some(replayed) = replay_by_id.get(&target.id) else {
+            continue;
+        };
+        let (kind, tick) =
+            if (target.velocity, target.duration) != (replayed.velocity, replayed.duration) {
+                (UnreachableKind::Note, target.start)
+            } else if target_smf.tracks[target.track][target.off_event].kind
+                != replay_smf.tracks[replayed.track][replayed.off_event].kind
+            {
+                (
+                    UnreachableKind::Uncompared(Uncompared::ReleaseVelocity),
+                    target.start + target.duration,
+                )
+            } else {
+                continue;
+            };
+        let difference = UnreachableDifference::at(kind, target.track, tick);
+        if !differences.contains(&difference) {
+            differences.push(difference);
+        }
+    }
+    Ok(())
+}
+
+type EventSites<'a> = BTreeMap<u32, (Vec<TrackEventKind<'a>>, Vec<TrackEventKind<'a>>)>;
+
+fn event_sites<'a>(
+    before: &[TrackEvent<'a>],
+    after: &[TrackEvent<'a>],
+    include: impl Fn(TrackEventKind<'_>) -> bool,
+) -> EventSites<'a> {
+    let mut sites = EventSites::new();
+    for (tick, event) in events_at_ticks(before).filter(|(_, event)| include(*event)) {
+        sites.entry(tick).or_default().0.push(event);
+    }
+    for (tick, event) in events_at_ticks(after).filter(|(_, event)| include(*event)) {
+        sites.entry(tick).or_default().1.push(event);
+    }
+    sites
+}
+
 /// Compare re-read events by absolute Tick: a note Edit changes its
 /// neighbours' delta times even when those events themselves stay put.
 fn event_differences(
@@ -507,14 +615,7 @@ fn event_differences(
 ) -> Vec<UnreachableDifference> {
     let mut differences = Vec::new();
     for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
-        let mut sites = BTreeMap::<_, (Vec<_>, Vec<_>)>::new();
-        for (tick, event) in events_at_ticks(before).filter(|(_, event)| include(*event)) {
-            sites.entry(tick).or_default().0.push(event);
-        }
-        for (tick, event) in events_at_ticks(after).filter(|(_, event)| include(*event)) {
-            sites.entry(tick).or_default().1.push(event);
-        }
-        for (tick, (before, after)) in sites {
+        for (tick, (before, after)) in event_sites(before, after, &include) {
             if before == after {
                 continue;
             }
@@ -574,15 +675,7 @@ fn differences_at<'a>(
     let after = common_events(after, common);
     if before != after {
         differences.extend(channel_order_differences(&before, &after));
-        // Relative order within one statement address changes its content.
-        // Report it as that statement kind, leaving order between addresses
-        // (or between other event kinds) to the event order diagnostic.
-        let order_key = |event: &TrackEventKind<'a>| {
-            channel_statement(event)
-                .map(|(statement, _)| statement)
-                .ok_or(*event)
-        };
-        if before.iter().map(order_key).ne(after.iter().map(order_key)) {
+        if departures(&before).1 != departures(&after).1 {
             differences.push(UnreachableKind::EventOrder);
         }
     }
@@ -590,27 +683,35 @@ fn differences_at<'a>(
 }
 
 /// Reordering repeated statements can change their meaning without changing
-/// their multiset. The last one states the value in force (#87).
-fn channel_order_differences(
-    before: &[TrackEventKind<'_>],
-    after: &[TrackEventKind<'_>],
+/// their multiset. The last statement at an address gives the value in force.
+fn channel_order_differences<'a>(
+    before: &[TrackEventKind<'a>],
+    after: &[TrackEventKind<'a>],
 ) -> Vec<UnreachableKind> {
-    let values = |events: &[TrackEventKind<'_>]| {
+    fn statements<'a>(
+        events: &[TrackEventKind<'a>],
+    ) -> BTreeMap<(UnreachableKind, u8, u8), Vec<TrackEventKind<'a>>> {
         let mut addresses = BTreeMap::<_, Vec<_>>::new();
-        for (statement, value) in events.iter().filter_map(channel_statement) {
-            addresses.entry(statement).or_default().push(value);
+        for &event in events {
+            let address = event_address(event);
+            if matches!(
+                address.0,
+                UnreachableKind::Controller
+                    | UnreachableKind::Program
+                    | UnreachableKind::Tempo
+                    | UnreachableKind::PitchBend
+            ) {
+                addresses.entry(address).or_default().push(event);
+            }
         }
         addresses
-    };
-    let before = values(before);
-    let after = values(after);
+    }
+    let before = statements(before);
+    let after = statements(after);
     before
         .into_iter()
-        .filter(|(statement, values)| after.get(statement) != Some(values))
-        .map(|(statement, _)| match statement.state {
-            ChannelState::Controller(_) => UnreachableKind::Controller,
-            ChannelState::Program => UnreachableKind::Program,
-        })
+        .filter(|(address, values)| after.get(address) != Some(values))
+        .map(|((kind, _, _), _)| kind)
         .collect()
 }
 
