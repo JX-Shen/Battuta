@@ -115,7 +115,8 @@ fn derive_at_same_coordinates(
     let before_notes = before.notes()?;
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
-    derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
+    let zero_duration = derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
+    let state_start = edits.len();
     let (corrections, new_orders) = rank_changes(input, target);
     differences.extend(new_orders);
     derive_channel_state(input, target, &corrections, &mut edits);
@@ -125,16 +126,37 @@ fn derive_at_same_coordinates(
     let replay = match apply(before, &edit_set) {
         Ok(replay) => replay,
         Err(source) => {
-            differences.extend(event_differences(input, target, |kind| {
-                !matches!(
-                    event_address(kind).0,
-                    UnreachableKind::Note
-                        | UnreachableKind::TrackEnd
-                        | UnreachableKind::Uncompared(Uncompared::ReleaseVelocity)
-                )
-            }));
+            let state_set = EditSet {
+                edits: edit_set.edits[state_start..].to_vec(),
+            };
+            // A rejected note Edit does not make independent state changes
+            // unreachable. Read their replay where that subset can apply.
+            let state_replay = if state_start > 0 && !state_set.edits.is_empty() {
+                apply(before, &state_set).ok()
+            } else {
+                None
+            };
+            let state_replay = state_replay.as_ref().map(Take::smf).transpose()?;
+            differences.extend(event_differences(
+                state_replay.as_ref().unwrap_or(input),
+                target,
+                |kind| {
+                    !matches!(
+                        event_address(kind).0,
+                        UnreachableKind::Note
+                            | UnreachableKind::TrackEnd
+                            | UnreachableKind::Uncompared(Uncompared::ReleaseVelocity)
+                    )
+                },
+            ));
+            differences.extend(zero_duration);
             if let Some(difference) = blocked_note(&source, &after_notes) {
-                differences.push(difference);
+                if !differences.contains(&difference) {
+                    differences.push(difference);
+                }
+                return Err(unreachable(differences));
+            }
+            if matches!(source, Error::DurationOutOfRange(0)) {
                 return Err(unreachable(differences));
             }
             differences.sort_unstable();
@@ -332,10 +354,6 @@ fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> 
                 note.start + note.duration,
             )
         }
-        Error::DurationOutOfRange(0) => {
-            let note = notes.iter().find(|note| note.duration == 0)?;
-            (UnreachableKind::Note, note.track, note.start)
-        }
         Error::StateUnrankedAgainstNotes { stating, tick, .. }
         | Error::StatesUnrankedAgainstEachOther { stating, tick, .. }
         | Error::ControllerUnrankedAgainstReset { stating, tick, .. } => {
@@ -346,16 +364,30 @@ fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> 
     Some(UnreachableDifference::at(kind, track, tick))
 }
 
-fn derive_notes(before: &[Note], after: &[Note], tolerance_ticks: u32, edits: &mut Vec<Edit>) {
+fn derive_notes(
+    before: &[Note],
+    after: &[Note],
+    tolerance_ticks: u32,
+    edits: &mut Vec<Edit>,
+) -> Vec<UnreachableDifference> {
     let (matched, taken) = match_notes(before, after, tolerance_ticks);
     let mut moved_from = vec![None; after.len()];
+    let mut zero_duration = Vec::new();
     for (note, target) in before.iter().zip(matched) {
         match target {
             None => edits.push(Edit::DeleteNote {
                 id: note.id.clone(),
             }),
             Some(index) if after[index].id == note.id => {
-                change_note(note, &after[index], false, edits);
+                let target = &after[index];
+                if target.duration == 0 && note.duration != 0 {
+                    zero_duration.push(UnreachableDifference::at(
+                        UnreachableKind::Note,
+                        target.track,
+                        target.start,
+                    ));
+                }
+                change_note(note, target, false, edits);
             }
             Some(index) => moved_from[index] = Some(note),
         }
@@ -364,6 +396,15 @@ fn derive_notes(before: &[Note], after: &[Note], tolerance_ticks: u32, edits: &m
     // Moves and additions arrive in target strike order, which decides the
     // occurrence indices of notes that land at the same address (ADR-0002).
     for (index, note) in after.iter().enumerate() {
+        if note.duration == 0
+            && (!taken[index] || moved_from[index].is_some_and(|source| source.duration != 0))
+        {
+            zero_duration.push(UnreachableDifference::at(
+                UnreachableKind::Note,
+                note.track,
+                note.start,
+            ));
+        }
         if let Some(source) = moved_from[index] {
             change_note(source, note, true, edits);
         } else if !taken[index] {
@@ -377,6 +418,7 @@ fn derive_notes(before: &[Note], after: &[Note], tolerance_ticks: u32, edits: &m
             });
         }
     }
+    zero_duration
 }
 
 fn change_note(note: &Note, target: &Note, moved: bool, edits: &mut Vec<Edit>) {

@@ -167,6 +167,60 @@ fn an_added_note_with_a_nonzero_release_velocity_is_unreachable() {
 }
 
 #[test]
+fn refused_zero_duration_additions_do_not_hide_the_reachable_state_edits() {
+    use common::{build_state_tracks, control_change, program_change, release, strike, tempo};
+
+    let dir = tempfile::tempdir().unwrap();
+    let carried = [strike(0, 61), release(0, 61)];
+    let before = build_state_tracks(
+        &dir.path().join("before.mid"),
+        &[carried
+            .into_iter()
+            .chain([
+                program_change(10, 40),
+                program_change(20, 40),
+                control_change(30, 11, 40),
+                tempo(40, 500_000),
+            ])
+            .collect()],
+    );
+    let after = build_state_tracks(
+        &dir.path().join("after.mid"),
+        &[carried
+            .into_iter()
+            .chain([
+                program_change(10, 41),
+                control_change(30, 11, 60),
+                tempo(40, 600_000),
+                strike(90, 60),
+                release(90, 60),
+                strike(100, 62),
+                release(100, 62),
+            ])
+            .collect()],
+    );
+    let output = dir.path().join("edits.json");
+    let refusal = mid()
+        .arg("derive")
+        .args([&before, &after])
+        .arg("--json")
+        .arg("-o")
+        .arg(&output)
+        .assert()
+        .failure();
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([
+            {"kind": "note", "track": 0, "tick": 90},
+            {"kind": "note", "track": 0, "tick": 100},
+            {"kind": "program", "track": 0, "tick": 20}
+        ])
+    );
+    assert!(!output.exists());
+}
+
+#[test]
 fn derive_refuses_an_output_naming_either_input() {
     let dir = tempfile::tempdir().unwrap();
     let before = build_note_event_take(&dir.path().join("before.mid"), &[vec![]]);
