@@ -822,7 +822,7 @@ impl<'a> Rewrite<'a> {
 /// The inverse of `Statement::is_stated_by`, which asks whether one event states
 /// one known address. This asks an event which address it states, because a
 /// check reading the finished track has no address in hand to ask about.
-fn stated_by(kind: &TrackEventKind) -> Option<Statement> {
+pub(crate) fn stated_by(kind: &TrackEventKind) -> Option<Statement> {
     let TrackEventKind::Midi { channel, message } = kind else {
         return None;
     };
@@ -844,7 +844,7 @@ fn stated_by(kind: &TrackEventKind) -> Option<Statement> {
 /// The value, and not only the address, because two tracks stating one channel
 /// the *same* value at one Tick leave an order that decides nothing: both ways
 /// round the channel ends up where the Take says. See #26.
-fn valued(kind: &TrackEventKind) -> Option<u8> {
+pub(crate) fn valued(kind: &TrackEventKind) -> Option<u8> {
     let TrackEventKind::Midi { message, .. } = kind else {
         return None;
     };

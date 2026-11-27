@@ -8,10 +8,10 @@ use std::path::PathBuf;
 /// exactly one End-of-Track event, as its last event. A note present in
 /// both Takes by identity keeps that identity. Differences in its velocity
 /// or duration are expressed by changes to those fields. A note present in
-/// just one Take is expressed as a deletion or addition by default. With a
-/// positive tolerance, pairing such notes as moves is a judgement based on
-/// their start Ticks. Other differences
-/// that the Edit Set cannot reproduce are listed by kind, track and Tick.
+/// just one Take is expressed as a deletion or addition by default. A
+/// positive tolerance pairs such notes as moves, a judgement based on their
+/// start Ticks. Controller and Program statements are reached at their own
+/// addresses. Unreachable differences are listed by kind, track and Tick.
 ///
 /// Before writing, the Edit Set is applied and the resulting Take is
 /// re-read to verify the events against the target. On refusal or failed

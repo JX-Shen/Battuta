@@ -1,10 +1,12 @@
 //! Derive an ordinary Edit Set and check its reach against the Take it makes.
 //! See ADR-0010 and #86.
 
+use crate::controller::FIRST_CHANNEL_MODE;
 use crate::edit::{apply, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
 use crate::note::{match_notes, Note};
 use crate::take::{write_atomically, Take};
+use crate::track::{stated_by, valued, ChannelState, Statement};
 use crate::uncompared::{uncompared, Uncompared};
 use midly::{MetaMessage, MidiMessage, Smf, TrackEvent, TrackEventKind};
 use serde::Serialize;
@@ -76,6 +78,7 @@ pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<EditS
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
     derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
+    derive_channel_state(&input, &target, &mut edits);
 
     let edit_set = EditSet { edits };
     let replay = match apply(before, &edit_set) {
@@ -299,6 +302,103 @@ fn change_note(note: &Note, target: &Note, moved: bool, edits: &mut Vec<Edit>) {
     edits.extend(resize);
 }
 
+#[derive(Default)]
+struct ChannelValues {
+    before: Vec<u8>,
+    after: Vec<(usize, u8)>,
+}
+
+/// The statement in force is last at its address (#87).
+fn derive_channel_state(before: &Smf<'_>, after: &Smf<'_>, edits: &mut Vec<Edit>) {
+    for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
+        let mut addresses = BTreeMap::<_, ChannelValues>::new();
+        for (tick, event) in events_at_ticks(before) {
+            if let Some((statement, value)) = channel_statement(&event) {
+                addresses
+                    .entry((tick, statement))
+                    .or_default()
+                    .before
+                    .push(value);
+            }
+        }
+        for (position, (tick, event)) in events_at_ticks(after).enumerate() {
+            if let Some((statement, value)) = channel_statement(&event) {
+                addresses
+                    .entry((tick, statement))
+                    .or_default()
+                    .after
+                    .push((position, value));
+            }
+        }
+
+        let mut sets = Vec::new();
+        for ((tick, statement), ChannelValues { before, after }) in addresses {
+            let original_shadowed = &before[..before.len().saturating_sub(1)];
+            if let Some((&(position, value), target_shadowed)) = after.split_last() {
+                if original_shadowed
+                    .iter()
+                    .copied()
+                    .eq(target_shadowed.iter().map(|&(_, value)| value))
+                    && before.last() != Some(&value)
+                {
+                    sets.push((position, set_channel_state(track, tick, statement, value)));
+                    continue;
+                }
+            }
+            if let ChannelState::Controller(controller) = statement.state {
+                if !before.is_empty()
+                    && original_shadowed
+                        .iter()
+                        .copied()
+                        .eq(after.iter().map(|&(_, value)| value))
+                {
+                    edits.push(Edit::DeleteController {
+                        track: track as i64,
+                        tick: i64::from(tick),
+                        channel: i64::from(statement.channel),
+                        controller: i64::from(controller),
+                    });
+                }
+            }
+        }
+
+        // When several statements land at one Tick, apply places them in the
+        // order the Edit Set asks for. Read that order from the target.
+        sets.sort_unstable_by_key(|&(position, _)| position);
+        edits.extend(sets.into_iter().map(|(_, edit)| edit));
+    }
+}
+
+fn channel_statement(event: &TrackEventKind<'_>) -> Option<(Statement, u8)> {
+    let statement = stated_by(event)?;
+    if matches!(statement.state, ChannelState::Controller(number) if number >= FIRST_CHANNEL_MODE) {
+        return None;
+    }
+    Some((statement, valued(event)?))
+}
+
+fn set_channel_state(track: usize, tick: u32, statement: Statement, value: u8) -> Edit {
+    let track = track as i64;
+    let tick = i64::from(tick);
+    let channel = i64::from(statement.channel);
+    let value = i64::from(value);
+    match statement.state {
+        ChannelState::Program => Edit::SetProgram {
+            track,
+            channel,
+            tick,
+            program: value,
+        },
+        ChannelState::Controller(controller) => Edit::SetController {
+            track,
+            channel,
+            controller: i64::from(controller),
+            tick,
+            value,
+        },
+    }
+}
+
 /// Compare re-read events by absolute Tick: a note Edit changes its
 /// neighbours' delta times even when those events themselves stay put.
 fn event_differences(
@@ -371,10 +471,48 @@ fn differences_at<'a>(
         .into_iter()
         .map(|(event, (before, after))| (event, before.min(after)))
         .collect();
-    if common_events(before, common.clone()) != common_events(after, common) {
-        differences.push(UnreachableKind::EventOrder);
+    let before = common_events(before, common.clone());
+    let after = common_events(after, common);
+    if before != after {
+        differences.extend(channel_order_differences(&before, &after));
+        // Relative order within one statement address changes its content.
+        // Report it as that statement kind, leaving order between addresses
+        // (or between other event kinds) to the event order diagnostic.
+        let order_key = |event: &TrackEventKind<'a>| {
+            channel_statement(event)
+                .map(|(statement, _)| statement)
+                .ok_or(*event)
+        };
+        if before.iter().map(order_key).ne(after.iter().map(order_key)) {
+            differences.push(UnreachableKind::EventOrder);
+        }
     }
     differences
+}
+
+/// Reordering repeated statements can change their meaning without changing
+/// their multiset. The last one states the value in force (#87).
+fn channel_order_differences(
+    before: &[TrackEventKind<'_>],
+    after: &[TrackEventKind<'_>],
+) -> Vec<UnreachableKind> {
+    let values = |events: &[TrackEventKind<'_>]| {
+        let mut addresses = BTreeMap::<_, Vec<_>>::new();
+        for (statement, value) in events.iter().filter_map(channel_statement) {
+            addresses.entry(statement).or_default().push(value);
+        }
+        addresses
+    };
+    let before = values(before);
+    let after = values(after);
+    before
+        .into_iter()
+        .filter(|(statement, values)| after.get(statement) != Some(values))
+        .map(|(statement, _)| match statement.state {
+            ChannelState::Controller(_) => UnreachableKind::Controller,
+            ChannelState::Program => UnreachableKind::Program,
+        })
+        .collect()
 }
 
 fn common_events<'a>(
