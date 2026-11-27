@@ -318,15 +318,12 @@ against another track's writing of that channel: the same word, and a different
 thing each is ranked against. A **Bend** is held by the channel as a **Program**
 is, so it is the case above unchanged.
 
-Unranked is a property of the file, never a complaint about it. `mid inspect`
-reports where a Take is unranked, `apply` refuses to write a new one, and
-`--allow-unranked` names a site the person running it is answering for — a
-track, a channel and a tick. A state with no channel has no such site and is
-offered none: no Edit writes a tempo, so nothing can put one of these places
-into a Take and there is nothing for a caller to answer for. Where both readings
-agree — two tracks stating one channel the same Program at one Tick — nothing is
-unranked in any sense worth a word, because no order decides anything. See #26
-and #42.
+Unranked is a property of the file. `mid inspect` reports where a Take is
+unranked, and `apply` refuses to introduce a new Unranked site. Tempo edits
+can carry an existing conflicting pair of tempo statements unchanged.
+`--allow-unranked` applies to channel-state sites addressed by track,
+channel and Tick. Where two tracks state the same value, their order leaves
+the value in force the same. See #26, #42 and #82.
 _中文_: 无次序
 _Avoid_: ambiguous, undefined, unordered, racy; 歧义、未定义、乱序
 
