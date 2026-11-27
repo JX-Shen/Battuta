@@ -125,13 +125,8 @@ fn unreachable_differences_are_located_without_replacing_the_output() {
         .failure();
     let report: Value = serde_json::from_slice(&command.get_output().stdout).unwrap();
     assert_eq!(report["output"], Value::Null);
-    assert_eq!(report["refusal"].as_array().unwrap().len(), 4, "{report}");
-    for (kind, tick) in [
-        ("event_order", 0),
-        ("tempo", 240),
-        ("pitch_bend", 360),
-        ("text", 480),
-    ] {
+    assert_eq!(report["refusal"].as_array().unwrap().len(), 3, "{report}");
+    for (kind, tick) in [("event_order", 0), ("pitch_bend", 360), ("text", 480)] {
         assert!(
             report["refusal"]
                 .as_array()

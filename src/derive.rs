@@ -116,6 +116,7 @@ fn derive_at_same_coordinates(
     after_notes.retain(|note| note.track < input.tracks.len());
     derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
     derive_channel_state(input, target, &mut edits);
+    derive_tempos(input, target, &mut edits);
 
     let edit_set = EditSet { edits };
     let replay = match apply(before, &edit_set) {
@@ -246,6 +247,56 @@ fn reordered_tracks<'a>(
             tick: None,
         })
         .collect()
+}
+
+/// Address the last statement at each track and Tick, as the tempo Edits
+/// do (#90). Earlier statements stay in their written order.
+fn derive_tempos(before: &Smf<'_>, after: &Smf<'_>, edits: &mut Vec<Edit>) {
+    for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
+        let mut sites = BTreeMap::<_, (Vec<_>, Vec<_>)>::new();
+        for (tick, value) in tempos_on_track(before) {
+            sites.entry(tick).or_default().0.push(value);
+        }
+        for (tick, value) in tempos_on_track(after) {
+            sites.entry(tick).or_default().1.push(value);
+        }
+        for (tick, (source, target)) in sites {
+            let delete = source.len() == target.len() + 1;
+            let remaining = &source[..source.len() - usize::from(delete)];
+            let replacement = if remaining == target {
+                None
+            } else {
+                let Some((&value, shadowed)) = target.split_last() else {
+                    continue;
+                };
+                let prior = remaining.split_last().map_or(&[][..], |(_, prefix)| prefix);
+                if value == 0 || prior != shadowed {
+                    continue;
+                }
+                Some(value)
+            };
+            if delete {
+                edits.push(Edit::DeleteTempo {
+                    track: track as i64,
+                    tick: i64::from(tick),
+                });
+            }
+            if let Some(value) = replacement {
+                edits.push(Edit::SetTempo {
+                    track: track as i64,
+                    tick: i64::from(tick),
+                    micros_per_quarter: i64::from(value),
+                });
+            }
+        }
+    }
+}
+
+fn tempos_on_track<'a>(events: &'a [TrackEvent<'_>]) -> impl Iterator<Item = (u32, u32)> + 'a {
+    events_at_ticks(events).filter_map(|(tick, event)| match event {
+        TrackEventKind::Meta(MetaMessage::Tempo(value)) => Some((tick, value.as_int())),
+        _ => None,
+    })
 }
 
 fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> {
