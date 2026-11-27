@@ -236,6 +236,17 @@ fn reordered_tracks<'a>(
             occurrences.insert(track, remaining - 1);
         }
     }
+    // A Tempo may move between otherwise identical tracks (#90).
+    let without_tempo = |(_, kind): &(u32, TrackEventKind<'_>)| {
+        !matches!(kind, TrackEventKind::Meta(MetaMessage::Tempo(_)))
+    };
+    if before.iter().zip(after).all(|(before, after)| {
+        events_at_ticks(before)
+            .filter(without_tempo)
+            .eq(events_at_ticks(after).filter(without_tempo))
+    }) {
+        return Vec::new();
+    }
     before
         .iter()
         .zip(after)

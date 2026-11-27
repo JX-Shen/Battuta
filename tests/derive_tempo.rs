@@ -94,3 +94,23 @@ fn deleting_a_tempo_exposes_the_previous_statement_at_its_tick() {
         [json!({"kind":"delete_tempo", "track":0, "tick":480})],
     );
 }
+
+#[test]
+fn moving_the_only_tempo_between_otherwise_identical_tracks_is_reachable() {
+    let dir = tempfile::tempdir().unwrap();
+    let before = build_state_tracks(
+        &dir.path().join("before.mid"),
+        &[vec![tempo(0, 500_000)], vec![]],
+    );
+    let after = build_state_tracks(
+        &dir.path().join("after.mid"),
+        &[vec![], vec![tempo(0, 500_000)]],
+    );
+    assert_eq!(
+        derive_and_replay(&before, &after),
+        [
+            json!({"kind":"delete_tempo", "track":0, "tick":0}),
+            json!({"kind":"set_tempo", "track":1, "tick":0, "micros_per_quarter":500000}),
+        ],
+    );
+}
