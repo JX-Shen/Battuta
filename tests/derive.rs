@@ -221,6 +221,39 @@ fn refused_zero_duration_additions_do_not_hide_the_reachable_state_edits() {
 }
 
 #[test]
+fn a_refused_note_does_not_hide_state_edits_that_need_other_note_edits() {
+    use common::{build_state_tracks, program_change, release, strike};
+
+    let dir = tempfile::tempdir().unwrap();
+    let before = build_state_tracks(
+        &dir.path().join("before.mid"),
+        &[vec![], vec![strike(0, 60), release(60, 60)]],
+    );
+    let after = build_state_tracks(
+        &dir.path().join("after.mid"),
+        &[
+            vec![program_change(0, 40)],
+            vec![strike(90, 62), release(90, 62)],
+        ],
+    );
+    let output = dir.path().join("edits.json");
+    let refusal = mid()
+        .arg("derive")
+        .args([&before, &after])
+        .arg("--json")
+        .arg("-o")
+        .arg(&output)
+        .assert()
+        .failure();
+    let report: Value = serde_json::from_slice(&refusal.get_output().stdout).unwrap();
+    assert_eq!(
+        report["refusal"],
+        json!([{"kind": "note", "track": 1, "tick": 90}])
+    );
+    assert!(!output.exists());
+}
+
+#[test]
 fn derive_refuses_an_output_naming_either_input() {
     let dir = tempfile::tempdir().unwrap();
     let before = build_note_event_take(&dir.path().join("before.mid"), &[vec![]]);

@@ -6,7 +6,7 @@ mod ppq;
 pub use ppq::{PpqTickRefusal, Rescaling};
 
 use crate::controller::{FIRST_CHANNEL_MODE, RESET_ALL_CONTROLLERS};
-use crate::edit::{apply, same_file, Edit, EditSet};
+use crate::edit::{apply_traced, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
 use crate::note::{match_notes, Note};
 use crate::rank::departures;
@@ -115,48 +115,29 @@ fn derive_at_same_coordinates(
     let before_notes = before.notes()?;
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
-    let zero_duration = derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
-    let state_start = edits.len();
+    let blocked = derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
     let (corrections, new_orders) = rank_changes(input, target);
     differences.extend(new_orders);
     derive_channel_state(input, target, &corrections, &mut edits);
     derive_tempos(input, target, &mut edits);
 
     let edit_set = EditSet { edits };
-    let replay = match apply(before, &edit_set) {
+    let (replay, origins) = match apply_traced(before, &edit_set, &[]) {
         Ok(replay) => replay,
         Err(source) => {
-            let state_set = EditSet {
-                edits: edit_set.edits[state_start..].to_vec(),
-            };
-            // A rejected note Edit does not make independent state changes
-            // unreachable. Read their replay where that subset can apply.
-            let state_replay = if state_start > 0 && !state_set.edits.is_empty() {
-                apply(before, &state_set).ok()
-            } else {
-                None
-            };
-            let state_replay = state_replay.as_ref().map(Take::smf).transpose()?;
-            differences.extend(event_differences(
-                state_replay.as_ref().unwrap_or(input),
-                target,
-                |kind| {
-                    !matches!(
-                        event_address(kind).0,
-                        UnreachableKind::Note
-                            | UnreachableKind::TrackEnd
-                            | UnreachableKind::Uncompared(Uncompared::ReleaseVelocity)
-                    )
-                },
-            ));
-            differences.extend(zero_duration);
+            differences.extend(event_differences(input, target, |_, _, _, kind| {
+                !matches!(
+                    event_address(kind).0,
+                    UnreachableKind::Note
+                        | UnreachableKind::TrackEnd
+                        | UnreachableKind::Uncompared(Uncompared::ReleaseVelocity)
+                )
+            }));
+            differences.extend(blocked.differences);
             if let Some(difference) = blocked_note(&source, &after_notes) {
                 if !differences.contains(&difference) {
                     differences.push(difference);
                 }
-                return Err(unreachable(differences));
-            }
-            if matches!(source, Error::DurationOutOfRange(0)) {
                 return Err(unreachable(differences));
             }
             differences.sort_unstable();
@@ -167,13 +148,27 @@ fn derive_at_same_coordinates(
         }
     };
     let re_read = replay.smf()?;
-    let mut replay_differences = event_differences(&re_read, target, |_| true);
+    let mut replay_differences = event_differences(&re_read, target, |source, track, index, _| {
+        if source {
+            origins[track][index]
+                .is_none_or(|original| !blocked.source.contains(&(track, original)))
+        } else {
+            !blocked.target.contains(&(track, index))
+        }
+    });
     replay_differences.retain(|difference| {
         difference.kind != UnreachableKind::EventOrder || !differences.contains(difference)
     });
     differences.extend(replay_differences);
-    note_order_differences(&replay, &re_read, &after_notes, target, &mut differences)?;
-    if differences.is_empty() {
+    note_order_differences(
+        &replay,
+        &re_read,
+        &after_notes,
+        target,
+        &blocked,
+        &mut differences,
+    )?;
+    if differences.is_empty() && blocked.differences.is_empty() {
         return Ok(edit_set);
     }
     // A positive-duration note's strike is fully stated by the normal form.
@@ -182,9 +177,11 @@ fn derive_at_same_coordinates(
         .iter()
         .any(|difference| difference.kind == UnreachableKind::Note)
     {
+        differences.extend(blocked.differences);
         differences.sort_unstable();
         return Err(Error::DeriveVerificationFailed { differences });
     }
+    differences.extend(blocked.differences);
     Err(unreachable(differences))
 }
 
@@ -364,15 +361,51 @@ fn blocked_note(error: &Error, notes: &[Note]) -> Option<UnreachableDifference> 
     Some(UnreachableDifference::at(kind, track, tick))
 }
 
+#[derive(Default)]
+struct BlockedNotes {
+    differences: Vec<UnreachableDifference>,
+    source: BTreeSet<(usize, usize)>,
+    target: BTreeSet<(usize, usize)>,
+    strikes: BTreeSet<(usize, u8, u8, u32)>,
+}
+
+impl BlockedNotes {
+    fn skip_zero_duration(&mut self, source: Option<&Note>, target: &Note) -> bool {
+        if target.duration != 0 || source.is_some_and(|note| note.duration == 0) {
+            return false;
+        }
+        self.differences.push(UnreachableDifference::at(
+            UnreachableKind::Note,
+            target.track,
+            target.start,
+        ));
+        if let Some(note) = source {
+            self.source
+                .extend([(note.track, note.on_event), (note.track, note.off_event)]);
+            self.strikes.insert(strike_address(note));
+        }
+        self.target.extend([
+            (target.track, target.on_event),
+            (target.track, target.off_event),
+        ]);
+        self.strikes.insert(strike_address(target));
+        true
+    }
+}
+
+fn strike_address(note: &Note) -> (usize, u8, u8, u32) {
+    (note.track, note.channel, note.pitch, note.start)
+}
+
 fn derive_notes(
     before: &[Note],
     after: &[Note],
     tolerance_ticks: u32,
     edits: &mut Vec<Edit>,
-) -> Vec<UnreachableDifference> {
+) -> BlockedNotes {
     let (matched, taken) = match_notes(before, after, tolerance_ticks);
     let mut moved_from = vec![None; after.len()];
-    let mut zero_duration = Vec::new();
+    let mut blocked = BlockedNotes::default();
     for (note, target) in before.iter().zip(matched) {
         match target {
             None => edits.push(Edit::DeleteNote {
@@ -380,14 +413,9 @@ fn derive_notes(
             }),
             Some(index) if after[index].id == note.id => {
                 let target = &after[index];
-                if target.duration == 0 && note.duration != 0 {
-                    zero_duration.push(UnreachableDifference::at(
-                        UnreachableKind::Note,
-                        target.track,
-                        target.start,
-                    ));
+                if !blocked.skip_zero_duration(Some(note), target) {
+                    change_note(note, target, false, edits);
                 }
-                change_note(note, target, false, edits);
             }
             Some(index) => moved_from[index] = Some(note),
         }
@@ -396,18 +424,11 @@ fn derive_notes(
     // Moves and additions arrive in target strike order, which decides the
     // occurrence indices of notes that land at the same address (ADR-0002).
     for (index, note) in after.iter().enumerate() {
-        if note.duration == 0
-            && (!taken[index] || moved_from[index].is_some_and(|source| source.duration != 0))
-        {
-            zero_duration.push(UnreachableDifference::at(
-                UnreachableKind::Note,
-                note.track,
-                note.start,
-            ));
-        }
         if let Some(source) = moved_from[index] {
-            change_note(source, note, true, edits);
-        } else if !taken[index] {
+            if !blocked.skip_zero_duration(Some(source), note) {
+                change_note(source, note, true, edits);
+            }
+        } else if !taken[index] && !blocked.skip_zero_duration(None, note) {
             edits.push(Edit::AddNote {
                 track: note.track as i64,
                 channel: i64::from(note.channel),
@@ -418,7 +439,7 @@ fn derive_notes(
             });
         }
     }
-    zero_duration
+    blocked
 }
 
 fn change_note(note: &Note, target: &Note, moved: bool, edits: &mut Vec<Edit>) {
@@ -566,7 +587,7 @@ fn rank_changes(
     let mut corrections = BTreeSet::new();
     let mut refusals = Vec::new();
     for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
-        for (tick, (before, after)) in event_sites(before, after, |_| true) {
+        for (tick, (before, after)) in event_sites(before, after, |_, _, _| true) {
             if before == after {
                 continue;
             }
@@ -609,11 +630,16 @@ fn note_order_differences(
     replay_smf: &Smf<'_>,
     target_notes: &[Note],
     target_smf: &Smf<'_>,
+    blocked: &BlockedNotes,
     differences: &mut Vec<UnreachableDifference>,
 ) -> Result<()> {
     let replay_notes = replay.notes()?;
     let replay_by_id: HashMap<_, _> = replay_notes.iter().map(|note| (&note.id, note)).collect();
     for target in target_notes {
+        // An omitted strike can change the occurrence indices at its address.
+        if blocked.strikes.contains(&strike_address(target)) {
+            continue;
+        }
         let Some(replayed) = replay_by_id.get(&target.id) else {
             continue;
         };
@@ -643,14 +669,18 @@ type EventSites<'a> = BTreeMap<u32, (Vec<TrackEventKind<'a>>, Vec<TrackEventKind
 fn event_sites<'a>(
     before: &[TrackEvent<'a>],
     after: &[TrackEvent<'a>],
-    include: impl Fn(TrackEventKind<'_>) -> bool,
+    include: impl Fn(bool, usize, TrackEventKind<'_>) -> bool,
 ) -> EventSites<'a> {
     let mut sites = EventSites::new();
-    for (tick, event) in events_at_ticks(before).filter(|(_, event)| include(*event)) {
-        sites.entry(tick).or_default().0.push(event);
+    for (index, (tick, event)) in events_at_ticks(before).enumerate() {
+        if include(true, index, event) {
+            sites.entry(tick).or_default().0.push(event);
+        }
     }
-    for (tick, event) in events_at_ticks(after).filter(|(_, event)| include(*event)) {
-        sites.entry(tick).or_default().1.push(event);
+    for (index, (tick, event)) in events_at_ticks(after).enumerate() {
+        if include(false, index, event) {
+            sites.entry(tick).or_default().1.push(event);
+        }
     }
     sites
 }
@@ -660,11 +690,13 @@ fn event_sites<'a>(
 fn event_differences(
     before: &Smf<'_>,
     after: &Smf<'_>,
-    include: impl Fn(TrackEventKind<'_>) -> bool,
+    include: impl Fn(bool, usize, usize, TrackEventKind<'_>) -> bool,
 ) -> Vec<UnreachableDifference> {
     let mut differences = Vec::new();
     for (track, (before, after)) in before.tracks.iter().zip(&after.tracks).enumerate() {
-        for (tick, (before, after)) in event_sites(before, after, &include) {
+        for (tick, (before, after)) in event_sites(before, after, |source, index, event| {
+            include(source, track, index, event)
+        }) {
             if before == after {
                 continue;
             }
