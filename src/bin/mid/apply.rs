@@ -32,7 +32,8 @@ use std::path::PathBuf;
 ///         { "kind": "delete_controller", "track": 1, "channel": 0, "controller": 11,
 ///                                        "tick": 1440 },
 ///         { "kind": "move_controller",   "track": 1, "channel": 0, "controller": 11,
-///                                        "tick": 1440, "delta_ticks": 240 }
+///                                        "tick": 1440, "delta_ticks": 240 },
+///         { "kind": "set_tempo", "track": 0, "tick": 480, "micros_per_quarter": 625000 }
 ///       ]
 ///     }
 ///
@@ -49,6 +50,13 @@ use std::path::PathBuf;
 /// the Take's to make. `mid inspect` is where you see what the passage ends up
 /// on. The track is stated rather than inferred, because which track carries a
 /// channel's program change is the author's arrangement of the file.
+///
+/// `set_tempo` states the track, Tick and tempo in microseconds per quarter
+/// note (1-16777215). At that address it changes the value of the last tempo
+/// statement in place, or inserts one immediately before the first strike of
+/// any channel. With no strike it inserts at the end of the Tick. Inserting
+/// beyond the track's End-of-Track advances it to the new statement's Tick.
+/// Later tempo statements are kept as written.
 ///
 /// The three `*_controller` kinds reach what a channel holds for one Controller
 /// at one Tick — CC number 0-119, value 0-127. Controllers 120-127 are channel
@@ -125,6 +133,10 @@ use std::path::PathBuf;
 ///     0-15, a program outside 0-127, or a Tick before 0
 ///   * a Controller Edit naming a track the Take does not have, a channel outside
 ///     0-15, a controller outside 0-119, a value outside 0-127, or a Tick before 0
+///   * a tempo Edit naming a track the Take does not have or a Tick outside
+///     0-4294967295, a tempo value outside its range, or an Edit Set creating a
+///     new conflict between tempo statements on different tracks at one Tick.
+///     Tempo has no channel and `--allow-unranked` cannot name it.
 ///   * a `delete_controller` or `move_controller` naming an address the input
 ///     Take states nothing at — including one an earlier `set_controller` in the
 ///     same Edit Set created, because targets are fixed against the input Take

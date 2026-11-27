@@ -224,6 +224,25 @@ pub enum Error {
     #[error("a Controller cannot be stated at tick {0}; a Tick is 0-{max}", max = u32::MAX)]
     ControllerTickOutOfRange(i64),
 
+    #[error("a tempo cannot be stated at tick {0}; a Tick is 0-{max}", max = u32::MAX)]
+    TempoTickOutOfRange(i64),
+
+    #[error("tempo {0} is out of range; a MIDI tempo is 1-{max} microseconds per quarter note", max = midly::num::u24::max_value().as_int())]
+    TempoOutOfRange(i64),
+
+    #[error(
+        "the Edit Set leaves conflicting tempo statements at tick {tick}: track {track} states \
+         {value} and track {other_track} states {other_value} microseconds per quarter note. \
+         The file states no order between tracks."
+    )]
+    TemposUnranked {
+        tick: u32,
+        track: usize,
+        value: u32,
+        other_track: usize,
+        other_value: u32,
+    },
+
     #[error(
         "moving a Controller from tick {from} by {delta_ticks} ticks lands it at {landed}; \
          a Tick is 0-{max}", max = u32::MAX
@@ -517,6 +536,19 @@ pub enum Error {
         side: usize,
         take: PathBuf,
         edit: usize,
+    },
+
+    #[error(
+        "side {side} ({take}): Edit {edit} of its Edit Set, counted from 0, is `{kind}`, a kind \
+         combine does not take up in this release; `mid combine --help` names the kinds it does. \
+         Nothing has been written. Leave that Edit out of the Alternative and apply it to the \
+         combined Take afterwards."
+    )]
+    TempoEditOutsideCombination {
+        side: usize,
+        take: PathBuf,
+        edit: usize,
+        kind: &'static str,
     },
 
     #[error(

@@ -4,8 +4,8 @@ use crate::note::{Note, NoteId};
 use crate::reading::{Candidate, Reading, Timeline};
 use crate::take::Take;
 use crate::track::{ChannelState, Placement, Rewrite, Statement};
-use midly::num::{u4, u7};
-use midly::{MidiMessage, TrackEventKind};
+use midly::num::{u24, u4, u7};
+use midly::{MetaMessage, MidiMessage, TrackEventKind};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -138,6 +138,14 @@ pub enum Edit {
         tick: i64,
         delta_ticks: i64,
     },
+
+    /// State the tempo from a Tick, changing the statement in force there or
+    /// inserting one on the named track. See #84.
+    SetTempo {
+        track: i64,
+        tick: i64,
+        micros_per_quarter: i64,
+    },
 }
 
 impl EditSet {
@@ -207,18 +215,22 @@ struct NewProgram {
 /// An Edit once it has been looked up against the input Take. One shape per sort
 /// of Edit: those naming a note, the one stating a note, the one stating which
 /// Program a channel is on, the one stating what it holds for a Controller, and
-/// those naming a Controller it already holds.
+/// those naming a Controller it already holds or stating a tempo.
 ///
-/// The last two are the same split as the first two. An Edit that states an
-/// address carries the address, because there may be nothing there to name; an
-/// Edit that names carries what it found, because finding it again later would
-/// be finding something else.
+/// An Edit that states an address carries the address, because there may be
+/// nothing there to name; an Edit that names carries what it found, because
+/// finding it again later would be finding something else.
 enum Landing {
     Named(Change, Note),
     Stated(NewNote),
     Orchestrated(NewProgram),
     Controlled(NewController),
     NamedController(ControllerChange, crate::controller::ControllerEvent),
+    SetTempo {
+        track: i64,
+        tick: i64,
+        micros_per_quarter: i64,
+    },
 }
 
 /// Every identity in the Edit Set, resolved against the input Take before any
@@ -350,6 +362,15 @@ fn resolve(
                 tick,
                 ControllerChange::Move(delta_ticks),
             ),
+            Edit::SetTempo {
+                track,
+                tick,
+                micros_per_quarter,
+            } => Ok(Landing::SetTempo {
+                track,
+                tick,
+                micros_per_quarter,
+            }),
         })
         .collect()
 }
@@ -391,6 +412,9 @@ pub(crate) fn apply_traced(
 ) -> Result<(Take, Origins)> {
     let notes = take.notes()?;
     let resolved = resolve(&notes, &take.controller_events()?, &edit_set.edits)?;
+    let tempos_edited = resolved
+        .iter()
+        .any(|landing| matches!(landing, Landing::SetTempo { .. }));
 
     let mut smf = take.smf()?;
     // Every track is opened before the first Edit lands, and every Edit reaches
@@ -420,6 +444,11 @@ pub(crate) fn apply_traced(
             Landing::NamedController(change, named) => {
                 change_controller(&mut tracks, change, named)?
             }
+            Landing::SetTempo {
+                track,
+                tick,
+                micros_per_quarter,
+            } => state_tempo(&mut tracks, track, tick, micros_per_quarter)?,
         }
     }
     let expected = stay_distinct(&tracks, &sounding)?;
@@ -438,6 +467,9 @@ pub(crate) fn apply_traced(
         })
         .collect::<Result<_>>()?;
     let result = Take::from_smf(&smf)?;
+    if tempos_edited {
+        tempos_stay_rankable(take, &result)?;
+    }
     // Read every release in the finished Take, including carried releases
     // that ended no note in the input (#77).
     let found: BTreeMap<_, _> = result
@@ -458,6 +490,44 @@ pub(crate) fn apply_traced(
         }
     }
     Ok((result, origins))
+}
+
+/// Compare candidate statements at their original Ticks, using the same
+/// reduction as inspection. An unchanged conflicting pair may be carried (#82).
+fn tempos_stay_rankable(before: &Take, after: &Take) -> Result<()> {
+    let conflicts = after.unranked_tempos(None)?;
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    let carried = before.unranked_tempos(None)?;
+    for conflict in conflicts {
+        let previous = carried
+            .binary_search_by_key(&conflict.from, |span| span.from)
+            .ok()
+            .map_or(&[][..], |index| carried[index].candidates.as_slice());
+        for changed in &conflict.candidates {
+            let value = changed.value.micros_per_quarter;
+            if previous
+                .binary_search_by_key(&changed.track, |candidate| candidate.track)
+                .is_ok_and(|index| previous[index].value.micros_per_quarter == value)
+            {
+                continue;
+            }
+            let other = conflict
+                .candidates
+                .iter()
+                .find(|candidate| candidate.value.micros_per_quarter != value)
+                .expect("a conflict has differing values");
+            return Err(Error::TemposUnranked {
+                tick: conflict.from,
+                track: changed.track,
+                value,
+                other_track: other.track,
+                other_value: other.value.micros_per_quarter,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The two slots carrying one note of the Take being built.
@@ -1061,6 +1131,38 @@ fn state_controller(tracks: &mut [Rewrite], new: NewController) -> Result<()> {
                 placement,
             );
         }
+    }
+    Ok(())
+}
+
+fn state_tempo(
+    tracks: &mut [Rewrite],
+    track: i64,
+    tick: i64,
+    micros_per_quarter: i64,
+) -> Result<()> {
+    let index = usize::try_from(track)
+        .ok()
+        .filter(|index| *index < tracks.len())
+        .ok_or(Error::NoSuchTrack {
+            track,
+            tracks: tracks.len(),
+        })?;
+    let tick = u32::try_from(tick).map_err(|_| Error::TempoTickOutOfRange(tick))?;
+    let value = u32::try_from(micros_per_quarter)
+        .ok()
+        .filter(|value| *value > 0)
+        .and_then(u24::try_from)
+        .ok_or(Error::TempoOutOfRange(micros_per_quarter))?;
+    let track = &mut tracks[index];
+    if let Some(held) = track.tempo_at(tick) {
+        track.set_tempo(held, value);
+    } else {
+        track.push(
+            tick,
+            TrackEventKind::Meta(MetaMessage::Tempo(value)),
+            Placement::Tempo,
+        );
     }
     Ok(())
 }

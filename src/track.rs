@@ -33,7 +33,7 @@
 //! in an Edit Set is resolved before the first Edit lands.
 
 use crate::error::{Error, Result};
-use midly::num::{u28, u7};
+use midly::num::{u24, u28, u7};
 use midly::{MetaMessage, MidiMessage, TrackEvent, TrackEventKind};
 
 /// One event of a track, found by its index and placed by its Tick and Rank.
@@ -94,6 +94,9 @@ pub(crate) enum Placement {
     /// strikes it governs — and `before_the_strikes` is the rule #20 settled
     /// from it, in the three clauses `mid apply --help` states.
     State(Statement),
+    /// A new tempo statement goes immediately before the first strike of any
+    /// channel, or at the end of its Tick if there is no strike (#84).
+    Tempo,
 }
 
 /// What one event states about a channel: which channel, and which of its
@@ -352,6 +355,13 @@ impl<'a> Rewrite<'a> {
         self.in_force_at(tick, Statement::controller(channel, controller))
     }
 
+    /// The last live tempo statement at this Tick, by Rank (#84).
+    pub(crate) fn tempo_at(&self, tick: u32) -> Option<usize> {
+        self.last_at(tick, |kind| {
+            matches!(kind, TrackEventKind::Meta(MetaMessage::Tempo(_)))
+        })
+    }
+
     /// The alive slot stating this channel state at this Tick, last by Rank —
     /// "in force", by ADR-0008's rule. `None` if the track states none there.
     ///
@@ -360,14 +370,22 @@ impl<'a> Rewrite<'a> {
     /// searches that could drift apart. It is also the question the placement
     /// rule's first clause asks, through the same `Statement`.
     fn in_force_at(&self, tick: u32, statement: Statement) -> Option<usize> {
+        self.last_at(tick, |kind| statement.is_stated_by(kind))
+    }
+
+    fn last_at(&self, tick: u32, matches: impl Fn(&TrackEventKind) -> bool) -> Option<usize> {
         self.slots
             .iter()
             .enumerate()
-            .filter(|(_, slot)| {
-                slot.alive && slot.tick == tick && statement.is_stated_by(&slot.kind)
-            })
+            .filter(|(_, slot)| slot.alive && slot.tick == tick && matches(&slot.kind))
             .max_by_key(|(_, slot)| slot.rank)
             .map(|(index, _)| index)
+    }
+
+    /// Change only the value of the tempo statement found by `tempo_at` (#84).
+    pub(crate) fn set_tempo(&mut self, index: usize, value: u24) {
+        self.slots[index].kind = TrackEventKind::Meta(MetaMessage::Tempo(value));
+        self.wrote(index);
     }
 
     /// Put a control change on another value, reporting the one it carried.
@@ -437,16 +455,12 @@ impl<'a> Rewrite<'a> {
         self.slots
             .iter()
             .filter(|slot| slot.alive)
-            .filter_map(|slot| match slot.kind {
-                TrackEventKind::Midi {
-                    channel,
-                    message: MidiMessage::NoteOn { vel, .. },
-                } if vel.as_int() > 0 => Some(Struck {
+            .filter_map(|slot| {
+                Some(Struck {
                     tick: slot.tick,
-                    channel: channel.as_int(),
+                    channel: striking_channel(&slot.kind)?,
                     written: slot.written.is_some(),
-                }),
-                _ => None,
+                })
             })
     }
 
@@ -489,6 +503,14 @@ impl<'a> Rewrite<'a> {
             Placement::Strike => self.after_everything(index),
             Placement::Release => self.before_everything(index),
             Placement::State(statement) => self.before_the_strikes(index, statement),
+            Placement::Tempo => {
+                let strike = self
+                    .sharing(index)
+                    .filter(|slot| striking_channel(&slot.kind).is_some())
+                    .map(|slot| slot.rank)
+                    .min();
+                self.before_strike_or_at_end(index, strike)
+            }
         };
         self.slots[index].rank = rank;
         self.wrote(index);
@@ -569,6 +591,10 @@ impl<'a> Rewrite<'a> {
         // 3. Or, where no strike follows it, at the end of the Tick. Without
         //    this the placement is undefined wherever a Tick strikes nothing on
         //    the channel.
+        self.before_strike_or_at_end(placing, strike)
+    }
+
+    fn before_strike_or_at_end(&self, placing: usize, strike: Option<i64>) -> i64 {
         let Some(strike) = strike else {
             return self.after_everything(placing);
         };
@@ -874,21 +900,20 @@ fn key(kind: &TrackEventKind) -> Option<u8> {
     }
 }
 
-/// Whether an event strikes a note on this channel: a note-on above velocity
-/// zero.
-///
-/// Velocity rather than status byte, because the format spells a release two
-/// ways and a note-on at velocity zero is the second of them. Counting one as a
-/// strike would put a state event in front of a release — which is the whole
-/// mistake, made one layer down.
 fn strikes(kind: &TrackEventKind, channel: u8) -> bool {
-    matches!(
-        kind,
+    striking_channel(kind) == Some(channel)
+}
+
+/// The channel a note-on above velocity zero strikes. A note-on at velocity
+/// zero releases a note, so it does not count as a strike.
+fn striking_channel(kind: &TrackEventKind) -> Option<u8> {
+    match kind {
         TrackEventKind::Midi {
-            channel: on,
+            channel,
             message: MidiMessage::NoteOn { vel, .. },
-        } if on.as_int() == channel && vel.as_int() > 0
-    )
+        } if vel.as_int() > 0 => Some(channel.as_int()),
+        _ => None,
+    }
 }
 
 /// Absolute Ticks in, delta times out: the one rule for placing events back
