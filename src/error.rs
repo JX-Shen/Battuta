@@ -224,8 +224,14 @@ pub enum Error {
     #[error("a Controller cannot be stated at tick {0}; a Tick is 0-{max}", max = u32::MAX)]
     ControllerTickOutOfRange(i64),
 
-    #[error("a tempo cannot be stated at tick {0}; a Tick is 0-{max}", max = u32::MAX)]
+    #[error("tempo tick {0} is out of range; a Tick is 0-{max}", max = u32::MAX)]
     TempoTickOutOfRange(i64),
+
+    #[error("the input Take states no tempo on track {track} at tick {tick}")]
+    UnknownTempo { track: usize, tick: u32 },
+
+    #[error("the input tempo on track {track} at tick {tick} was already deleted")]
+    TempoAlreadyDeleted { track: usize, tick: u32 },
 
     #[error("tempo {0} is out of range; a MIDI tempo is 1-{max} microseconds per quarter note", max = midly::num::u24::max_value().as_int())]
     TempoOutOfRange(i64),

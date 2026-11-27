@@ -14,6 +14,7 @@
                                    "tick": 1440 },
     { "kind": "move_controller",   "track": 1, "channel": 0, "controller": 11,
                                    "tick": 1440, "delta_ticks": 240 },
-    { "kind": "set_tempo", "track": 0, "tick": 480, "micros_per_quarter": 625000 }
+    { "kind": "set_tempo", "track": 0, "tick": 480, "micros_per_quarter": 625000 },
+    { "kind": "delete_tempo", "track": 0, "tick": 0 }
   ]
 }

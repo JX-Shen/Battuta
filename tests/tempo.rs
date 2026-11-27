@@ -87,6 +87,10 @@ fn set_tempo(track: i64, tick: i64, micros_per_quarter: i64) -> Value {
     })
 }
 
+fn delete_tempo(track: i64, tick: i64) -> Value {
+    json!({ "kind": "delete_tempo", "track": track, "tick": tick })
+}
+
 fn take_paths(dir: &tempfile::TempDir) -> (PathBuf, PathBuf) {
     (dir.path().join("input.mid"), dir.path().join("output.mid"))
 }
@@ -167,29 +171,37 @@ fn refuses_a_new_conflicting_tempo_on_another_track() {
 #[test]
 fn combine_refuses_an_alternative_by_its_tempo_edit_kind() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let (input, alternative) = take_paths(&dir);
+    let (input, _) = take_paths(&dir);
     write_take(&input, &[&[(0, tempo(500_000)), (960, END)], &[(960, END)]]);
-    apply(&input, vec![set_tempo(0, 0, 625_003)], &alternative).success();
 
-    let combined = dir.path().join("combined.mid");
     let empty = dir.path().join("empty.json");
+    let combined = dir.path().join("combined.mid");
     write_edits(&empty, vec![]);
-    mid()
-        .arg("combine")
-        .arg(&input)
-        .arg("--side")
-        .arg(&alternative)
-        .arg(alternative.with_extension("json"))
-        .arg("--side")
-        .arg(&input)
-        .arg(&empty)
-        .arg("-o")
-        .arg(&combined)
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("combine does not take up"))
-        .stderr(predicates::str::contains("set_tempo"));
-    assert!(!combined.exists());
+    for (index, edit) in [set_tempo(0, 0, 625_003), delete_tempo(0, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        let alternative = dir.path().join(format!("alternative-{index}.mid"));
+        let kind = edit["kind"].as_str().expect("edit kind").to_owned();
+        apply(&input, vec![edit], &alternative).success();
+
+        mid()
+            .arg("combine")
+            .arg(&input)
+            .arg("--side")
+            .arg(&alternative)
+            .arg(alternative.with_extension("json"))
+            .arg("--side")
+            .arg(&input)
+            .arg(&empty)
+            .arg("-o")
+            .arg(&combined)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("combine does not take up"))
+            .stderr(predicates::str::contains(format!("is `{kind}`")));
+        assert!(!combined.exists());
+    }
 }
 
 #[test]
@@ -278,10 +290,7 @@ fn refuses_out_of_range_tempo_fields_without_writing_a_take() {
             set_tempo(0, 480, 16_777_216),
             "tempo 16777216 is out of range",
         ),
-        (
-            set_tempo(0, -1, 500_000),
-            "a tempo cannot be stated at tick -1",
-        ),
+        (set_tempo(0, -1, 500_000), "tempo tick -1 is out of range"),
         (set_tempo(2, 480, 500_000), "track 2 is not in the Take"),
     ] {
         apply(&input, vec![set_tempo(0, 0, 500_000), edit], &output)
@@ -354,4 +363,160 @@ fn judges_cross_track_tempo_after_the_whole_edit_set() {
     let bytes = std::fs::read(output).expect("output written");
     let agreed = vec![(480, tempo(625_003)), (960, END)];
     assert_eq!(read_take(&bytes), vec![agreed.clone(), agreed]);
+}
+
+#[test]
+fn deletes_only_the_last_tempo_at_the_named_address() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, output) = take_paths(&dir);
+    let other_track = [(0, tempo(480_000)), (960, END)];
+    let marker = (480, TrackEventKind::Meta(MetaMessage::Marker(b"theme")));
+    let earlier = (480, tempo(500_000));
+    let strike = (480, note_on(3, 60, 90));
+    let release = (720, note_on(3, 60, 0));
+    write_take(
+        &input,
+        &[
+            &other_track,
+            &[
+                marker,
+                earlier,
+                strike,
+                (480, tempo(625_000)),
+                release,
+                (960, END),
+            ],
+        ],
+    );
+
+    apply(&input, vec![delete_tempo(1, 480)], &output).success();
+
+    assert_eq!(
+        read_take(&std::fs::read(&output).expect("read output")),
+        vec![
+            other_track.to_vec(),
+            vec![marker, earlier, strike, release, (960, END)]
+        ],
+    );
+}
+
+#[test]
+fn refuses_a_second_deletion_of_the_same_original_tempo() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, output) = take_paths(&dir);
+    write_take(
+        &input,
+        &[&[(480, tempo(500_000)), (480, tempo(625_000)), (960, END)]],
+    );
+
+    apply(
+        &input,
+        vec![delete_tempo(0, 480), delete_tempo(0, 480)],
+        &output,
+    )
+    .failure()
+    .stderr(predicates::str::contains("already deleted"))
+    .stderr(predicates::str::contains("track 0 at tick 480"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn refuses_deletion_that_exposes_a_new_cross_track_tempo_conflict() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, output) = take_paths(&dir);
+    write_take(
+        &input,
+        &[
+            &[(480, tempo(500_000)), (960, END)],
+            &[(480, tempo(625_000)), (480, tempo(500_000)), (960, END)],
+        ],
+    );
+
+    apply(&input, vec![delete_tempo(1, 480)], &output)
+        .failure()
+        .stderr(predicates::str::contains(
+            "conflicting tempo statements at tick 480",
+        ))
+        .stderr(predicates::str::contains("track 1 states 625000"))
+        .stderr(predicates::str::contains("track 0 states 500000"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn refuses_to_delete_an_address_empty_in_the_input_take() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, output) = take_paths(&dir);
+    write_take(&input, &[&[(0, tempo(500_000)), (960, END)]]);
+
+    apply(
+        &input,
+        vec![set_tempo(0, 480, 625_000), delete_tempo(0, 480)],
+        &output,
+    )
+    .failure()
+    .stderr(predicates::str::contains(
+        "the input Take states no tempo on track 0 at tick 480",
+    ));
+    assert!(!output.exists());
+}
+
+#[test]
+fn insertion_and_deletion_round_trip_an_unstated_tempo_within_the_track_end() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, intermediate) = take_paths(&dir);
+    let output = dir.path().join("restored.mid");
+    let strike = (480, note_on(0, 60, 90));
+    let release = (720, note_on(0, 60, 0));
+    write_take(&input, &[&[(960, END)], &[strike, release, (960, END)]]);
+
+    apply(&input, vec![set_tempo(1, 480, 625_000)], &intermediate).success();
+    apply(&intermediate, vec![delete_tempo(1, 480)], &output).success();
+
+    let before = std::fs::read(&input).expect("read original");
+    let after = std::fs::read(&output).expect("read restored Take");
+    assert_eq!(Smf::parse(&before).unwrap(), Smf::parse(&after).unwrap());
+}
+
+#[test]
+fn setting_the_original_tempo_value_restores_the_event_stream() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, intermediate) = take_paths(&dir);
+    let output = dir.path().join("restored.mid");
+    let strike = (480, note_on(0, 60, 90));
+    let release = (720, note_on(0, 60, 0));
+    write_take(
+        &input,
+        &[
+            &[(960, END)],
+            &[strike, (480, tempo(500_000)), release, (960, END)],
+        ],
+    );
+
+    apply(&input, vec![set_tempo(1, 480, 625_000)], &intermediate).success();
+    apply(&intermediate, vec![set_tempo(1, 480, 500_000)], &output).success();
+
+    let before = std::fs::read(&input).expect("read original");
+    let after = std::fs::read(&output).expect("read restored Take");
+    assert_eq!(Smf::parse(&before).unwrap(), Smf::parse(&after).unwrap());
+}
+
+#[test]
+fn deleting_an_inserted_tempo_keeps_the_extended_track_end() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (input, intermediate) = take_paths(&dir);
+    let output = dir.path().join("after-delete.mid");
+    let music = [
+        (0, note_on(0, 60, 90)),
+        (960, note_on(0, 60, 0)),
+        (960, END),
+    ];
+    write_take(&input, &[&[(0, tempo(500_000)), (240, END)], &music]);
+
+    apply(&input, vec![set_tempo(0, 480, 625_000)], &intermediate).success();
+    apply(&intermediate, vec![delete_tempo(0, 480)], &output).success();
+
+    assert_eq!(
+        read_take(&std::fs::read(&output).expect("read output")),
+        vec![vec![(0, tempo(500_000)), (480, END)], music.to_vec()],
+    );
 }

@@ -33,7 +33,8 @@ use std::path::PathBuf;
 ///                                        "tick": 1440 },
 ///         { "kind": "move_controller",   "track": 1, "channel": 0, "controller": 11,
 ///                                        "tick": 1440, "delta_ticks": 240 },
-///         { "kind": "set_tempo", "track": 0, "tick": 480, "micros_per_quarter": 625000 }
+///         { "kind": "set_tempo", "track": 0, "tick": 480, "micros_per_quarter": 625000 },
+///         { "kind": "delete_tempo", "track": 0, "tick": 0 }
 ///       ]
 ///     }
 ///
@@ -57,6 +58,15 @@ use std::path::PathBuf;
 /// any channel. With no strike it inserts at the end of the Tick. Inserting
 /// beyond the track's End-of-Track advances it to the new statement's Tick.
 /// Later tempo statements are kept as written.
+///
+/// `delete_tempo` names the last tempo statement by Rank at a track and Tick
+/// in the input Take. An address with no original statement is refused, as is
+/// a second deletion of the same statement in one Edit Set. Earlier statements
+/// at that address stay as written. Deletion at an address with repeated tempo
+/// statements has no event-level inverse in the Edit Set language: setting the
+/// removed tempo there would change the statement the deletion exposed.
+/// Deletion leaves End-of-Track where it was, even if an earlier insertion
+/// advanced it.
 ///
 /// The three `*_controller` kinds reach what a channel holds for one Controller
 /// at one Tick — CC number 0-119, value 0-127. Controllers 120-127 are channel

@@ -146,6 +146,13 @@ pub enum Edit {
         tick: i64,
         micros_per_quarter: i64,
     },
+
+    /// Remove the statement in force at this track and Tick in the input Take.
+    /// See #85.
+    DeleteTempo {
+        track: i64,
+        tick: i64,
+    },
 }
 
 impl EditSet {
@@ -214,8 +221,7 @@ struct NewProgram {
 
 /// An Edit once it has been looked up against the input Take. One shape per sort
 /// of Edit: those naming a note, the one stating a note, the one stating which
-/// Program a channel is on, the one stating what it holds for a Controller, and
-/// those naming a Controller it already holds or stating a tempo.
+/// Program a channel is on, and those stating or naming a Controller or tempo.
 ///
 /// An Edit that states an address carries the address, because there may be
 /// nothing there to name; an Edit that names carries what it found, because
@@ -230,6 +236,11 @@ enum Landing {
         track: i64,
         tick: i64,
         micros_per_quarter: i64,
+    },
+    DeleteTempo {
+        track: usize,
+        tick: u32,
+        event: usize,
     },
 }
 
@@ -246,6 +257,7 @@ enum Landing {
 fn resolve(
     notes: &[Note],
     stated: &[crate::controller::ControllerEvent],
+    tracks: &[Rewrite],
     edits: &[Edit],
 ) -> Result<Vec<Landing>> {
     // A named Controller Edit is looked up in the *input* Take, before any
@@ -371,6 +383,13 @@ fn resolve(
                 tick,
                 micros_per_quarter,
             }),
+            Edit::DeleteTempo { track, tick } => {
+                let (track, tick) = tempo_address(tracks.len(), track, tick)?;
+                let event = tracks[track]
+                    .tempo_at(tick)
+                    .ok_or(Error::UnknownTempo { track, tick })?;
+                Ok(Landing::DeleteTempo { track, tick, event })
+            }
         })
         .collect()
 }
@@ -411,16 +430,18 @@ pub(crate) fn apply_traced(
     allowed: &[Site],
 ) -> Result<(Take, Origins)> {
     let notes = take.notes()?;
-    let resolved = resolve(&notes, &take.controller_events()?, &edit_set.edits)?;
-    let tempos_edited = resolved
-        .iter()
-        .any(|landing| matches!(landing, Landing::SetTempo { .. }));
-
     let mut smf = take.smf()?;
     // Every track is opened before the first Edit lands, and every Edit reaches
     // its events by the index its identity resolved to. Those indices stay valid
     // for the whole loop because nothing here ever shifts one — see `track`.
     let mut tracks: Vec<Rewrite> = smf.tracks.iter().map(|track| Rewrite::of(track)).collect();
+    let resolved = resolve(&notes, &take.controller_events()?, &tracks, &edit_set.edits)?;
+    let tempos_edited = resolved.iter().any(|landing| {
+        matches!(
+            landing,
+            Landing::SetTempo { .. } | Landing::DeleteTempo { .. }
+        )
+    });
 
     // Every note the finished Take will hold, named by the two slots that carry
     // it rather than by an identity: identities are what the finished Take is
@@ -449,6 +470,12 @@ pub(crate) fn apply_traced(
                 tick,
                 micros_per_quarter,
             } => state_tempo(&mut tracks, track, tick, micros_per_quarter)?,
+            Landing::DeleteTempo { track, tick, event } => {
+                if !tracks[track].holds(event) {
+                    return Err(Error::TempoAlreadyDeleted { track, tick });
+                }
+                tracks[track].remove(event);
+            }
         }
     }
     let expected = stay_distinct(&tracks, &sounding)?;
@@ -1135,20 +1162,22 @@ fn state_controller(tracks: &mut [Rewrite], new: NewController) -> Result<()> {
     Ok(())
 }
 
+fn tempo_address(tracks: usize, track: i64, tick: i64) -> Result<(usize, u32)> {
+    let index = usize::try_from(track)
+        .ok()
+        .filter(|index| *index < tracks)
+        .ok_or(Error::NoSuchTrack { track, tracks })?;
+    let tick = u32::try_from(tick).map_err(|_| Error::TempoTickOutOfRange(tick))?;
+    Ok((index, tick))
+}
+
 fn state_tempo(
     tracks: &mut [Rewrite],
     track: i64,
     tick: i64,
     micros_per_quarter: i64,
 ) -> Result<()> {
-    let index = usize::try_from(track)
-        .ok()
-        .filter(|index| *index < tracks.len())
-        .ok_or(Error::NoSuchTrack {
-            track,
-            tracks: tracks.len(),
-        })?;
-    let tick = u32::try_from(tick).map_err(|_| Error::TempoTickOutOfRange(tick))?;
+    let (index, tick) = tempo_address(tracks.len(), track, tick)?;
     let value = u32::try_from(micros_per_quarter)
         .ok()
         .filter(|value| *value > 0)
