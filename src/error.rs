@@ -503,6 +503,29 @@ pub enum Error {
         differences: Vec<crate::derive::UnreachableDifference>,
     },
 
+    #[error(
+        "cannot rescale the target from {after_ppq} PPQ to {before_ppq} PPQ: \
+         one PPQ must be a positive integer multiple of the other"
+    )]
+    DeriveInexactPpq { before_ppq: u16, after_ppq: u16 },
+
+    #[error(
+        "cannot rescale the target from {} PPQ to {} PPQ by factor {}: {reason}",
+        rescaling.after_ppq, rescaling.before_ppq, rescaling.factor
+    )]
+    DerivePpqTick {
+        rescaling: crate::derive::Rescaling,
+        difference: crate::derive::UnreachableDifference,
+        reason: crate::derive::PpqTickRefusal,
+    },
+
+    #[error("{source}")]
+    DeriveAfterRescaling {
+        rescaling: crate::derive::Rescaling,
+        #[source]
+        source: Box<Error>,
+    },
+
     #[error("some differences cannot be reached by the Edit Set language")]
     DeriveUnreachable {
         differences: Vec<crate::derive::UnreachableDifference>,

@@ -1,17 +1,21 @@
-use battuta::{derive::UnreachableDifference, Error};
-use serde_json::json;
+use battuta::{
+    derive::{UnreachableDifference, UnreachableKind},
+    Error,
+};
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Derive an Edit Set that turns one Take into another.
 ///
-/// Takes must have the same header and track structure. Each track must have
-/// exactly one End-of-Track event, as its last event. A note present in
-/// both Takes by identity keeps that identity. Differences in its velocity
-/// or duration are expressed by changes to those fields. A note present in
-/// just one Take is expressed as a deletion or addition by default. A
-/// positive tolerance pairs such notes as moves, a judgement based on their
-/// start Ticks. Controller and Program statements are reached at their own
-/// addresses. Unreachable differences are listed by kind, track and Tick.
+/// Takes must have the same format and track structure. Each track must have
+/// exactly one End-of-Track event, as its last event. When the PPQs differ by
+/// an integer factor, the target is read at the source PPQ if every event can
+/// be placed there exactly. A note keeps its identity across both Takes if
+/// only velocity or duration changes. A note present in just one Take is a
+/// deletion or addition by default. A positive tolerance pairs such notes
+/// as moves, a judgement based on their start Ticks in the source PPQ.
+/// Controller and Program statements are reached at their own addresses.
+/// Unreachable differences are listed by kind, track and Tick.
 ///
 /// Before writing, the Edit Set is applied and the resulting Take is
 /// re-read to verify the events against the target. On refusal or failed
@@ -48,33 +52,79 @@ pub fn run(args: Args) -> battuta::Result<()> {
         args.tolerance_ticks,
     );
     eprintln!("tolerance: {} ticks", args.tolerance_ticks);
-    match &result {
-        Ok(()) if args.json => println!(
-            "{}",
-            crate::json(&json!({ "output": args.output, "tolerance_ticks": args.tolerance_ticks }))
-        ),
-        Ok(()) => println!("{}", args.output.display()),
-        Err(Error::DeriveInvalidTrackEnds { differences })
-        | Err(Error::DeriveUnreachable { differences })
-        | Err(Error::DeriveVerificationFailed { differences })
-        | Err(Error::DeriveReplayFailed { differences, .. }) => {
+    let (error, rescaling) = match &result {
+        Ok(rescaling) => (None, *rescaling),
+        Err(Error::DeriveAfterRescaling { rescaling, source }) => {
+            (Some(source.as_ref()), Some(*rescaling))
+        }
+        Err(error) => (Some(error), None),
+    };
+    if let Some(scaling) = rescaling {
+        eprintln!(
+            "rescaled target from {} PPQ to {} PPQ (factor {})",
+            scaling.after_ppq, scaling.before_ppq, scaling.factor
+        );
+    }
+
+    let report = match error {
+        None => Some(json!({ "output": args.output })),
+        Some(error) => refusal(error).or_else(|| rescaling.map(|_| json!({ "output": null }))),
+    };
+    if args.json {
+        if let Some(mut report) = report {
+            report["tolerance_ticks"] = json!(args.tolerance_ticks);
+            if let Some(scaling) = rescaling {
+                report["rescaling"] = json!(scaling);
+            }
+            println!("{}", crate::json(&report));
+        }
+    } else if error.is_none() {
+        println!("{}", args.output.display());
+    }
+    result.map(|_| ())
+}
+
+fn refusal(error: &Error) -> Option<Value> {
+    match error {
+        Error::DeriveInexactPpq {
+            before_ppq,
+            after_ppq,
+        } => {
+            let difference = UnreachableDifference {
+                kind: UnreachableKind::Ppq,
+                track: None,
+                tick: None,
+            };
+            Some(json!({
+                "output": null,
+                "refusal": [difference],
+                "before_ppq": before_ppq,
+                "after_ppq": after_ppq
+            }))
+        }
+        Error::DerivePpqTick {
+            rescaling,
+            difference,
+            reason,
+        } => {
+            eprintln!("{}", crate::wording::unreachable_difference(difference));
+            Some(json!({
+                "output": null,
+                "refusal": [difference],
+                "before_ppq": rescaling.before_ppq,
+                "after_ppq": rescaling.after_ppq,
+                "reason": reason
+            }))
+        }
+        Error::DeriveInvalidTrackEnds { differences }
+        | Error::DeriveUnreachable { differences }
+        | Error::DeriveVerificationFailed { differences }
+        | Error::DeriveReplayFailed { differences, .. } => {
             for difference in differences {
                 eprintln!("{}", crate::wording::unreachable_difference(difference));
             }
-            if args.json {
-                print_refusal(differences, args.tolerance_ticks);
-            }
+            Some(json!({ "output": null, "refusal": differences }))
         }
-        Err(_) => {}
+        _ => None,
     }
-    result
-}
-
-fn print_refusal(differences: &[UnreachableDifference], tolerance_ticks: u32) {
-    println!(
-        "{}",
-        crate::json(
-            &json!({ "output": null, "refusal": differences, "tolerance_ticks": tolerance_ticks })
-        )
-    );
 }

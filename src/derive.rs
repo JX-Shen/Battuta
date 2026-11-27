@@ -1,6 +1,10 @@
 //! Derive an ordinary Edit Set and check its reach against the Take it makes.
 //! See ADR-0010 and #86.
 
+mod ppq;
+
+pub use ppq::{PpqTickRefusal, Rescaling};
+
 use crate::controller::FIRST_CHANNEL_MODE;
 use crate::edit::{apply, same_file, Edit, EditSet};
 use crate::error::{Error, Result};
@@ -51,11 +55,18 @@ pub enum UnreachableKind {
     Uncompared(Uncompared),
 }
 
+/// The verified Edit Set and any coordinate conversion used to derive it.
+#[derive(Debug)]
+pub struct Derived {
+    pub edit_set: EditSet,
+    pub rescaling: Option<Rescaling>,
+}
+
 /// Derive a verified Edit Set from the note identities in two Takes. A
 /// refusal names the differences the normal form could not reproduce.
-pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<EditSet> {
+pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<Derived> {
     let input = before.smf()?;
-    let target = after.smf()?;
+    let mut target = after.smf()?;
     let mut track_ends: Vec<_> = [&input, &target]
         .into_iter()
         .flat_map(invalid_track_ends)
@@ -67,7 +78,33 @@ pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<EditS
             differences: track_ends,
         });
     }
-    let mut differences = structural_differences(&input, &target);
+    let rescaling = ppq::rescale(input.header.timing, &mut target)?;
+    let result = if let Some(rescaling) = rescaling {
+        Take::from_smf(&target)
+            .and_then(|after| {
+                derive_at_same_coordinates(before, &after, &input, &target, tolerance_ticks)
+            })
+            .map_err(|source| Error::DeriveAfterRescaling {
+                rescaling,
+                source: Box::new(source),
+            })
+    } else {
+        derive_at_same_coordinates(before, after, &input, &target, tolerance_ticks)
+    };
+    result.map(|edit_set| Derived {
+        edit_set,
+        rescaling,
+    })
+}
+
+fn derive_at_same_coordinates(
+    before: &Take,
+    after: &Take,
+    input: &Smf<'_>,
+    target: &Smf<'_>,
+    tolerance_ticks: u32,
+) -> Result<EditSet> {
+    let mut differences = structural_differences(input, target);
     let reordered = reordered_tracks(&input.tracks, &target.tracks);
     if !reordered.is_empty() {
         differences.extend(reordered);
@@ -78,13 +115,13 @@ pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<EditS
     let mut after_notes = after.notes()?;
     after_notes.retain(|note| note.track < input.tracks.len());
     derive_notes(&before_notes, &after_notes, tolerance_ticks, &mut edits);
-    derive_channel_state(&input, &target, &mut edits);
+    derive_channel_state(input, target, &mut edits);
 
     let edit_set = EditSet { edits };
     let replay = match apply(before, &edit_set) {
         Ok(replay) => replay,
         Err(source) => {
-            differences.extend(event_differences(&input, &target, |kind| {
+            differences.extend(event_differences(input, target, |kind| {
                 !matches!(
                     event_address(kind).0,
                     UnreachableKind::Note
@@ -103,7 +140,7 @@ pub fn derive(before: &Take, after: &Take, tolerance_ticks: u32) -> Result<EditS
             });
         }
     };
-    differences.extend(event_differences(&replay.smf()?, &target, |_| true));
+    differences.extend(event_differences(&replay.smf()?, target, |_| true));
     if differences.is_empty() {
         return Ok(edit_set);
     }
@@ -572,12 +609,13 @@ pub fn derive_to_edit_set(
     after: &Path,
     output: &Path,
     tolerance_ticks: u32,
-) -> Result<()> {
+) -> Result<Option<Rescaling>> {
     if same_file(before, output) || same_file(after, output) {
         return Err(Error::DeriveWriteInPlace(output.to_path_buf()));
     }
-    let edits = derive(&Take::read(before)?, &Take::read(after)?, tolerance_ticks)?;
-    let mut bytes = serde_json::to_vec_pretty(&edits).expect("Edit Sets serialise");
+    let derived = derive(&Take::read(before)?, &Take::read(after)?, tolerance_ticks)?;
+    let mut bytes = serde_json::to_vec_pretty(&derived.edit_set).expect("Edit Sets serialise");
     bytes.push(b'\n');
-    write_atomically(output, &bytes)
+    write_atomically(output, &bytes)?;
+    Ok(derived.rescaling)
 }
