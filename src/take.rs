@@ -266,34 +266,7 @@ impl Take {
     /// leave a truncated file that is not a Take at all, under a name its owner
     /// is about to trust.
     pub fn write(&self, path: &Path) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let failed = |source: std::io::Error| Error::Write {
-            path: path.to_path_buf(),
-            source,
-        };
-        // Beside the destination, because a rename across two filesystems is
-        // not a rename and not atomic. Named so that one left behind by a
-        // process that died mid-write does not read as somebody's Take.
-        let directory = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let mut file = tempfile::Builder::new()
-            .prefix(".battuta-writing-")
-            .tempfile_in(directory)
-            .map_err(failed)?;
-        std::io::Write::write_all(&mut file, &self.bytes).map_err(failed)?;
-        // A temporary file is created private to its owner, and a Take is not a
-        // secret — it is a file somebody is about to open in something else. Set
-        // the mode rather than let it depend on which route wrote the file.
-        file.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o644))
-            .map_err(failed)?;
-        file.persist(path).map_err(|unrenamed| Error::Write {
-            path: path.to_path_buf(),
-            source: unrenamed.error,
-        })?;
-        Ok(())
+        write_atomically(path, &self.bytes)
     }
 
     /// The Take's bytes, for the one writer that must not use `write`.
@@ -656,4 +629,36 @@ struct Pairing {
     velocity: u8,
     on_event: usize,
     off_event: usize,
+}
+
+/// Write a complete artefact beside its destination before replacing it.
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let failed = |source: std::io::Error| Error::Write {
+        path: path.to_path_buf(),
+        source,
+    };
+    // Beside the destination, because a rename across two filesystems is
+    // not a rename and not atomic. Named so that one left behind by a
+    // process that died mid-write does not read as somebody's Take.
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut file = tempfile::Builder::new()
+        .prefix(".battuta-writing-")
+        .tempfile_in(directory)
+        .map_err(failed)?;
+    std::io::Write::write_all(&mut file, bytes).map_err(failed)?;
+    // A temporary file is created private to its owner, and a Take is not a
+    // secret — it is a file somebody is about to open in something else. Set
+    // the mode rather than let it depend on which route wrote the file.
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o644))
+        .map_err(failed)?;
+    file.persist(path).map_err(|unrenamed| Error::Write {
+        path: path.to_path_buf(),
+        source: unrenamed.error,
+    })?;
+    Ok(())
 }

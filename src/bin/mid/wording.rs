@@ -1355,3 +1355,26 @@ pub fn rendered(rendering: &battuta::Rendering) -> String {
         rendering.output.display()
     )
 }
+
+pub fn unreachable_difference(difference: &battuta::derive::UnreachableDifference) -> String {
+    use battuta::derive::UnreachableKind;
+    let kind = match difference.kind {
+        UnreachableKind::Ppq => "PPQ",
+        UnreachableKind::Header => "header",
+        UnreachableKind::TrackStructure => "track structure",
+        UnreachableKind::TrackEnd => "track end",
+        UnreachableKind::Note => "note",
+        UnreachableKind::Controller => "Controller",
+        UnreachableKind::Program => "Program",
+        UnreachableKind::Tempo => "tempo",
+        UnreachableKind::PitchBend => "pitch bend",
+        UnreachableKind::EventOrder => "event order",
+        UnreachableKind::Unranked => "order across tracks",
+        UnreachableKind::Uncompared(kind) => uncompared(kind),
+    };
+    match (difference.track, difference.tick) {
+        (Some(track), Some(tick)) => format!("{kind} on track {track} at Tick {tick}"),
+        (Some(track), None) => format!("{kind} on track {track}"),
+        (None, _) => kind.to_string(),
+    }
+}

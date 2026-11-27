@@ -12,6 +12,7 @@ pub mod bars;
 pub mod bend;
 pub mod combine;
 pub mod controller;
+pub mod derive;
 pub mod diff;
 pub mod edit;
 pub mod elapsed;

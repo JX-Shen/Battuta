@@ -6,12 +6,12 @@ use crate::take::Take;
 use crate::track::{ChannelState, Placement, Rewrite, Statement};
 use midly::num::{u24, u4, u7};
 use midly::{MetaMessage, MidiMessage, TrackEventKind};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A batch of Edits, applied together. The on-disk form is `edits.json`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditSet {
     pub edits: Vec<Edit>,
@@ -30,7 +30,7 @@ pub struct EditSet {
 /// Every number is `i64` on purpose. A field typed to what MIDI can hold would
 /// turn an out-of-range value into a JSON parse failure that does not say which
 /// number was wrong; kept wide, the number is reported as itself.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Edit {
     SetVelocity {

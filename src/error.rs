@@ -498,6 +498,31 @@ pub enum Error {
     )]
     WriteInPlace(PathBuf),
 
+    #[error("each input track must have exactly one trailing End-of-Track event")]
+    DeriveInvalidTrackEnds {
+        differences: Vec<crate::derive::UnreachableDifference>,
+    },
+
+    #[error("some differences cannot be reached by the Edit Set language")]
+    DeriveUnreachable {
+        differences: Vec<crate::derive::UnreachableDifference>,
+    },
+
+    #[error("the derived Edit Set did not reproduce the target Take (verification defect)")]
+    DeriveVerificationFailed {
+        differences: Vec<crate::derive::UnreachableDifference>,
+    },
+
+    #[error("the derived Edit Set could not be replayed: {source}")]
+    DeriveReplayFailed {
+        differences: Vec<crate::derive::UnreachableDifference>,
+        #[source]
+        source: Box<Error>,
+    },
+
+    #[error("derive never writes in place: -o {0} names one of its input Takes")]
+    DeriveWriteInPlace(PathBuf),
+
     #[error(
         "combine takes exactly two Alternatives and the common Take they were both made from; \
          {0} were given"

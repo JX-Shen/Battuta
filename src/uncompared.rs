@@ -67,7 +67,7 @@ pub enum Counted {
 
 /// Which kind of content `diff` does not compare an event is, or `None` where
 /// `diff` compares it.
-fn uncompared(kind: &TrackEventKind) -> Option<Uncompared> {
+pub(crate) fn uncompared(kind: &TrackEventKind) -> Option<Uncompared> {
     match kind {
         TrackEventKind::Midi { message, .. } => match message {
             // Notes. A release's velocity is the one part of it that is not

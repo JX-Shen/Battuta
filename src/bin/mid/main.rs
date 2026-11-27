@@ -10,6 +10,7 @@
 
 mod apply;
 mod combine;
+mod derive;
 mod diff;
 mod info;
 mod inspect;
@@ -41,6 +42,7 @@ enum Command {
     Inspect(inspect::Args),
     Apply(apply::Args),
     Combine(combine::Args),
+    Derive(derive::Args),
     Diff(diff::Args),
     Play(play::Args),
     Render(render::Args),
@@ -67,6 +69,7 @@ fn main() {
         Command::Inspect(args) => inspect::run(args),
         Command::Apply(args) => apply::run(args),
         Command::Combine(args) => combine::run(args),
+        Command::Derive(args) => derive::run(args),
         Command::Diff(args) => diff::run(args),
         Command::Play(args) => play::run(args),
         Command::Render(args) => render::run(args),
